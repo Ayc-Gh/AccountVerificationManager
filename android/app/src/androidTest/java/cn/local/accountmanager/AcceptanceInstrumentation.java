@@ -11,6 +11,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.security.KeyStore;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
@@ -40,6 +42,7 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             clearRepository();
             uiChecks();
             pasteAndClearChecks();
+            smartRecognitionChecks();
             clearRepository(); main(() -> { click(R.id.nav_parse); click(R.id.clear_input); });
             result.putString("stream", "PASS: " + passed + " on-device checks; Keystore, encrypted persistence, corruption recovery, UI parsing, copies, history, lifecycle.\n");
             finish(Activity.RESULT_OK, result);
@@ -52,6 +55,15 @@ public final class AcceptanceInstrumentation extends Instrumentation {
         Context context = getTargetContext();
         EncryptedHistoryStore store = new EncryptedHistoryStore(context, "acceptance-history.bin", "acceptance-history-v1");
         try {
+            store.clear();
+            KeyStore legacyKeys = KeyStore.getInstance("AndroidKeyStore"); legacyKeys.load(null);
+            byte[] legacyPlain = legacyHistory();
+            Files.write(store.file().toPath(), HistoryCipher.encrypt(legacyPlain, (javax.crypto.SecretKey) legacyKeys.getKey("acceptance-history-v1", null)));
+            List<HistoryEntry> oldHistory = store.load();
+            check(oldHistory.size() == 1 && oldHistory.get(0).password.equals(" *Legacy|Password* ") && oldHistory.get(0).otp.equals(OtpParameters.DEFAULT), "old encrypted v1 history still decrypts");
+            try (AccountData uri = SmartParser.parse("otpauth://totp/Example:alice@example.com?secret=" + SECRET + "&issuer=Example&algorithm=SHA256&digits=8&period=60", null)) { store.record(uri, true); }
+            List<HistoryEntry> upgraded = new EncryptedHistoryStore(context, "acceptance-history.bin", "acceptance-history-v1").load();
+            check(upgraded.size() == 2 && upgraded.get(0).otp.equals(new OtpParameters("SHA256", 8, 60)) && upgraded.get(1).password.equals(" *Legacy|Password* "), "v1 migration preserves old record and new URI parameters");
             store.clear();
             for (int i = 0; i < 12; i++) try (AccountData data = AccountParser.parse("test" + i + "@example.com----SyntheticPassword" + i + "----" + SECRET, null)) { store.record(data, true); }
             List<HistoryEntry> entries = store.load();
@@ -83,6 +95,99 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             new AtomicFile(store.file()).delete();
             KeyStore keys = KeyStore.getInstance("AndroidKeyStore"); keys.load(null); keys.deleteEntry("acceptance-history-v1");
         }
+    }
+    private byte[] legacyHistory() throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeInt(0x41564D48); out.writeInt(1); out.writeInt(1);
+            for (String value : new String[]{"6ef4828d-6abf-4abe-809e-7ff9f7a1e28a", "legacy@example.com", " *Legacy|Password* ", SECRET, "|", "|"}) {
+                byte[] b = value.getBytes(StandardCharsets.UTF_8); out.writeInt(b.length); out.write(b);
+            }
+            out.writeBoolean(false); out.writeLong(1234);
+        }
+        return bytes.toByteArray();
+    }
+
+    private void smartRecognitionChecks() throws Exception {
+        main(() -> {
+            click(R.id.nav_parse); click(R.id.auto_mode);
+            text(R.id.input).setText("gezd gnbv gy3t qojq gezd gnbv gy3t qojq"); click(R.id.parse);
+            check(!activity.findViewById(R.id.copy_account).isEnabled() && !activity.findViewById(R.id.copy_password).isEnabled(), "pure key has no fabricated account or password");
+            check(text(R.id.status).getText().toString().contains("纯 2FA 密钥"), "smart recognition identifies pure Base32 key");
+            click(R.id.copy_all); check(clipboard().contains("2FA密钥：" + SECRET) && !clipboard().contains("账号：") && !clipboard().contains("密码："), "pure key copy all contains only real fields");
+            click(R.id.copy_code); checkCurrentCode(clipboard(), "pure key current OTP");
+        });
+        waitFor(() -> repository.entries().size() == 1);
+        check(repository.entries().get(0).kind == AccountData.Kind.SECRET, "pure key persists with correct type");
+        if (preview) { main(() -> scrollFor(R.id.input).scrollTo(0, 0)); capture("preview-secret.png"); }
+        main(() -> {
+            click(R.id.nav_history);
+            activity.findViewById(R.id.history_list).findViewWithTag("history-copy-4:").performClick(); check(clipboard().equals(SECRET), "pure key history copies secret");
+            activity.findViewById(R.id.history_list).findViewWithTag("entry:" + repository.entries().get(0).id).performClick();
+            check(text(R.id.input).getText().toString().equals(SECRET) && activity.findViewById(R.id.copy_code).isEnabled(), "pure key history restores recognized result");
+        });
+        String uri = "otpauth://totp/Example:alice+test%40example.com?secret=" + SECRET + "&issuer=Example&algorithm=SHA256&digits=8&period=60";
+        OtpParameters custom = new OtpParameters("SHA256", 8, 60);
+        main(() -> {
+            text(R.id.input).setText(uri); click(R.id.parse);
+            check(text(R.id.account).getText().toString().equals("alice+test@example.com") && text(R.id.issuer).getText().toString().equals("Example"), "URI label issuer and plus address parsed");
+            check(!activity.findViewById(R.id.copy_password).isEnabled(), "URI has no fabricated password");
+            check(text(R.id.otp_parameters).getText().toString().equals(custom.description()), "URI custom algorithm digits and period displayed");
+            click(R.id.copy_code); checkCode(clipboard(), custom, "URI SHA256 eight-digit current OTP");
+            click(R.id.copy_uri);
+            try (AccountData parsed = SmartParser.parse(clipboard(), null)) {
+                check(parsed.otp.equals(custom) && parsed.account.equals("alice+test@example.com"), "copy URI preserves metadata and custom parameters");
+            }
+        });
+        waitFor(() -> repository.entries().size() == 2);
+        check(repository.entries().get(0).otp.equals(custom), "asynchronous history save preserves URI parameters");
+        if (preview) {
+            main(() -> scrollFor(R.id.input).scrollTo(0, 0)); capture("preview-uri.png");
+            main(() -> { ScrollView scroll = scrollFor(R.id.secret); scroll.scrollTo(0, scroll.getChildAt(0).getHeight()); }); capture("preview-uri-details.png");
+        }
+        recreateActivity();
+        main(() -> {
+            check(text(R.id.otp_parameters).getText().toString().equals(custom.description()), "URI parameters survive activity recreation");
+            click(R.id.copy_code); checkCode(clipboard(), custom, "URI code remains correct after recreation");
+            text(R.id.input).setText("otpauth://hotp/Alice?secret=" + SECRET + "&counter=0"); click(R.id.parse);
+            check(text(R.id.status).getText().toString().contains("HOTP") && !activity.findViewById(R.id.copy_code).isEnabled(), "unsupported HOTP fails clearly and invalidates old result");
+            click(R.id.nav_history);
+            HistoryEntry entry = repository.entries().get(0);
+            activity.findViewById(R.id.history_list).findViewWithTag("history-copy-2:" + entry.account).performClick(); checkCode(clipboard(), custom, "URI history computes custom OTP");
+            activity.findViewById(R.id.history_list).findViewWithTag("history-copy-3:" + entry.account).performClick();
+            check(clipboard().contains("发行方：Example") && !clipboard().contains("密码：") && !clipboard().contains(SECRET), "URI history group omits absent password and secret");
+            activity.findViewById(R.id.history_list).findViewWithTag("entry:" + entry.id).performClick();
+            check(text(R.id.otp_parameters).getText().toString().equals(custom.description()), "URI history restore retains parameters");
+            click(R.id.parse);
+        });
+        waitFor(() -> repository.entries().get(0).otp.equals(custom));
+        check(repository.entries().size() == 2, "restored URI reparses without duplicate history");
+        main(() -> { text(R.id.input).setText("otpauth://totp/?secret=" + SECRET); click(R.id.parse); });
+        waitFor(() -> repository.entries().size() == 3);
+        main(() -> {
+            check(!activity.findViewById(R.id.copy_account).isEnabled() && !activity.findViewById(R.id.copy_password).isEnabled(), "unnamed URI still generates code without fake fields");
+            click(R.id.copy_code); checkCurrentCode(clipboard(), "unnamed URI uses standard defaults");
+            click(R.id.nav_history);
+        });
+        if (preview) capture("preview-smart-history.png");
+    }
+
+    private void recreateActivity() throws Exception {
+        MainActivity old = activity;
+        CountDownLatch latch = new CountDownLatch(1); MainActivity[] next = {null};
+        Application application = (Application) getTargetContext().getApplicationContext();
+        Application.ActivityLifecycleCallbacks callback = new Application.ActivityLifecycleCallbacks() {
+            public void onActivityCreated(Activity a, Bundle b) {}
+            public void onActivityStarted(Activity a) {}
+            public void onActivityResumed(Activity a) { if (a instanceof MainActivity && a != old) { next[0] = (MainActivity) a; latch.countDown(); } }
+            public void onActivityPaused(Activity a) {}
+            public void onActivityStopped(Activity a) {}
+            public void onActivitySaveInstanceState(Activity a, Bundle b) {}
+            public void onActivityDestroyed(Activity a) {}
+        };
+        main(() -> { application.registerActivityLifecycleCallbacks(callback); old.recreate(); });
+        if (!latch.await(10, TimeUnit.SECONDS)) throw new AssertionError("URI activity recreation timed out");
+        activity = next[0]; main(() -> application.unregisterActivityLifecycleCallbacks(callback));
     }
     private void pasteAndClearChecks() throws Exception {
         main(() -> {
@@ -234,8 +339,12 @@ public final class AcceptanceInstrumentation extends Instrumentation {
     private void click(int id) { if (!activity.findViewById(id).performClick()) throw new AssertionError("click failed " + id); }
     private String clipboard() { return activity.getSystemService(ClipboardManager.class).getPrimaryClip().getItemAt(0).getText().toString(); }
     private void checkCurrentCode(String value, String label) {
+        checkCode(value, OtpParameters.DEFAULT, label);
+    }
+    private void checkCode(String value, OtpParameters parameters, String label) {
         long now = Totp.now(); byte[] key = Base32.decode(SECRET);
-        check(value.matches("[0-9]{6}") && (value.equals(Totp.generate(key, now, 6)) || value.equals(Totp.generate(key, now - 1, 6))), label);
+        check(value.matches("[0-9]{" + parameters.digits + "}") && (value.equals(Totp.generate(key, now, parameters)) || value.equals(Totp.generate(key, now - 1, parameters))), label);
+        Arrays.fill(key, (byte) 0);
     }
     private void check(boolean value, String label) {
         if (!value) throw new AssertionError(label); passed++;

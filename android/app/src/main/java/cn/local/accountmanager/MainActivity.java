@@ -23,7 +23,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private HistoryRepository history;
     private LinearLayout root, historyList, manualBox;
     private ScrollView parsePage, historyPage;
-    private TextView status, code, countdown, account, password, secret, countLabel, historyNotice;
+    private TextView status, code, countdown, account, password, secret, issuer, otpBadge, otpIdentity, countLabel, historyNotice, copyUri;
     private TextView autoButton, manualButton, parseNav, historyNav, clearHistory, showPassword, detected;
     private EditText input, separator;
     private Track track;
@@ -109,7 +109,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         LinearLayout historyContent = vertical(); historyContent.setPadding(dp(20), dp(6), dp(20), dp(24)); historyPage.addView(historyContent);
         buildHistory(historyContent);
         LinearLayout nav = horizontal(); nav.setPadding(dp(20), dp(8), dp(20), dp(8)); nav.setBackgroundColor(surface);
-        parseNav = navItem("解析", "scan", R.id.nav_parse, false);
+        parseNav = navItem("智能识别", "scan", R.id.nav_parse, false);
         historyNav = navItem("历史记录", "history", R.id.nav_history, true);
         nav.addView(parseNav, new LinearLayout.LayoutParams(0, dp(52), 1));
         nav.addView(historyNav, new LinearLayout.LayoutParams(0, dp(52), 1)); root.addView(nav);
@@ -118,22 +118,22 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
 
     private void buildInput(LinearLayout content) {
         LinearLayout card = card(); content.addView(card, spaced(0));
-        LinearLayout heading = horizontal(); heading.addView(text("识别账号记录", 17, ink, true), weight());
+        LinearLayout heading = horizontal(); heading.addView(text("智能识别解析", 17, ink, true), weight());
         TextView clear = button("清空", surface, muted, 13, () -> {
             input.setText(""); invalidateResult("已清空当前内容，历史记录仍保留。"); hideKeyboard();
         }); clear.setId(R.id.clear_input); heading.addView(clear, size(60, 44)); card.addView(heading);
         input = new EditText(this); input.setId(R.id.input); input.setTextSize(14); input.setTextColor(ink); input.setHintTextColor(muted);
-        input.setHint("在此粘贴一条记录\n账号----密码----2FA 密钥");
+        input.setHint("粘贴账号记录、纯 2FA 密钥\n或 otpauth://totp/… 链接");
         input.setGravity(Gravity.TOP | Gravity.START); input.setMinLines(3); input.setMaxLines(6);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS | android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         input.setPadding(dp(14), dp(14), dp(14), dp(14)); input.setBackground(shape(subtle, 12, line));
         input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(AccountParser.MAX_INPUT)});
         input.setSaveEnabled(false); input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
-        input.setContentDescription("原始账号记录"); input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        input.setContentDescription("待识别的账号记录、2FA 密钥或 Authenticator URI"); input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
         card.addView(input, spaced(8));
         LinearLayout modes = horizontal(); modes.setPadding(dp(4), dp(4), dp(4), dp(4)); modes.setBackground(shape(subtle, 12, 0));
-        autoButton = button("自动识别", surface, accent, 13, () -> setMode(true)); autoButton.setId(R.id.auto_mode);
+        autoButton = button("智能识别", surface, accent, 13, () -> setMode(true)); autoButton.setId(R.id.auto_mode);
         manualButton = button("手动分隔", subtle, muted, 13, () -> setMode(false)); manualButton.setId(R.id.manual_mode);
         modes.addView(autoButton, new LinearLayout.LayoutParams(0, dp(44), 1)); modes.addView(manualButton, new LinearLayout.LayoutParams(0, dp(44), 1));
         card.addView(modes, spaced(12));
@@ -148,10 +148,10 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         detected = text("连续 3 个及以上符号，如 ---、===、|||", 11, muted, false); detected.setPadding(0, dp(8), 0, dp(2)); card.addView(detected);
         LinearLayout actions = horizontal();
         TextView paste = button("粘贴并解析", tint, accent, 14, this::pasteAndParse); paste.setId(R.id.paste);
-        TextView parse = button("拆分并生成", accent, isDark() ? Color.parseColor("#102C26") : Color.WHITE, 14, this::parseInput); parse.setId(R.id.parse);
+        TextView parse = button("识别并生成", accent, isDark() ? Color.parseColor("#102C26") : Color.WHITE, 14, this::parseInput); parse.setId(R.id.parse);
         LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dp(50), 1); a.setMarginEnd(dp(8)); actions.addView(paste, a);
         actions.addView(parse, new LinearLayout.LayoutParams(0, dp(50), 1)); card.addView(actions, spaced(12));
-        status = text("粘贴后即可拆分，验证码每 30 秒自动更新", 11, muted, false); status.setId(R.id.status);
+        status = text("自动识别输入类型，按密钥或 URI 参数生成验证码", 11, muted, false); status.setId(R.id.status);
         status.setPadding(0, dp(10), 0, 0); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); card.addView(status);
         input.addTextChangedListener(watcher(() -> { if (!suppress) invalidateResult("内容已更改，请重新解析。"); }));
         separator.addTextChangedListener(watcher(() -> { if (!suppress && !automatic) invalidateResult("分隔符已更改，请重新解析。"); }));
@@ -166,7 +166,10 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         card.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.parseColor("#193C46"), Color.parseColor("#102B34")}));
         ((GradientDrawable) card.getBackground()).setCornerRadius(dp(20)); content.addView(card, spaced(16));
         LinearLayout top = horizontal(); TextView title = text("2FA 动态验证码", 14, Color.parseColor("#D3E8E8"), true); top.addView(title, weight());
-        TextView badge = text("SHA1 · 30s", 10, Color.parseColor("#A6C8CA"), false); top.addView(badge); card.addView(top);
+        card.addView(top);
+        otpIdentity = text("等待智能识别", 11, Color.parseColor("#D3E8E8"), false); otpIdentity.setMaxLines(2); otpIdentity.setEllipsize(TextUtils.TruncateAt.END);
+        card.addView(otpIdentity, spaced(8));
+        otpBadge = text("SHA1 · 6 位 · 30 秒", 11, Color.parseColor("#A6C8CA"), false); otpBadge.setId(R.id.otp_parameters); card.addView(otpBadge, spaced(6));
         code = text("--- ---", 42, Color.WHITE, true); code.setId(R.id.code); code.setTypeface(Typeface.create("monospace", Typeface.BOLD));
         code.setLetterSpacing(0.09f); code.setGravity(Gravity.CENTER); code.setPadding(0, dp(12), 0, dp(4));
         code.setAutoSizeTextTypeUniformWithConfiguration(26, 42, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
@@ -180,16 +183,20 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
 
     private void buildDetails(LinearLayout content) {
         LinearLayout card = card(); content.addView(card, spaced(16));
-        LinearLayout heading = horizontal(); heading.addView(text("登录信息", 17, ink, true), weight());
+        LinearLayout heading = horizontal(); heading.addView(text("识别结果", 17, ink, true), weight());
         TextView all = resultButton("复制全部", R.id.copy_all, () -> data.copyAll(Totp.now()), "全部结果", tint, accent);
         heading.addView(all, size(88, 44)); card.addView(heading);
+        issuer = field(card, "发行方", R.id.issuer, R.id.copy_issuer, () -> data.issuer, false);
         account = field(card, "账号", R.id.account, R.id.copy_account, () -> data.account, false);
         password = field(card, "密码", R.id.password, R.id.copy_password, () -> data.password, true);
         secret = field(card, "2FA 密钥", R.id.secret, R.id.copy_secret, () -> data.secret, false);
+        copyUri = resultButton("复制 Authenticator URI", R.id.copy_uri, () -> data.originalText(), "Authenticator URI", tint, accent);
+        card.addView(copyUri, spaced(8));
     }
 
     private TextView field(LinearLayout card, String title, int valueId, int copyId, Value value, boolean passwordField) {
-        View divider = new View(this); divider.setBackgroundColor(line); card.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+        LinearLayout group = vertical();
+        View divider = new View(this); divider.setBackgroundColor(line); group.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
         LinearLayout row = horizontal(); row.setPadding(0, dp(12), 0, dp(12));
         LinearLayout left = vertical(); left.addView(text(title, 11, muted, false));
         TextView v = text("等待解析", 14, ink, false); v.setId(valueId); v.setSaveEnabled(false);
@@ -200,7 +207,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
             showPassword.setId(R.id.show_password); row.addView(showPassword, size(48, 48));
         }
         TextView copy = resultButton("复制", copyId, value, title, tint, accent); copy.setContentDescription("复制" + title);
-        row.addView(copy, size(60, 48)); card.addView(row); return v;
+        row.addView(copy, size(60, 48)); group.addView(row); card.addView(group); return v;
     }
 
     private void buildHistory(LinearLayout content) {
@@ -237,22 +244,23 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
             LinearLayout card = card(); card.setBackground(shape(surface, 18, e.id.equals(selectedId) ? accent : line));
             card.setTag("entry:" + e.id);
             LinearLayout titleRow = horizontal();
-            TextView title = text(e.account, 15, ink, true); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
+            TextView title = text(e.displayName(), 15, ink, true); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
             title.setPadding(0, dp(8), dp(8), dp(8)); title.setMinHeight(dp(44)); title.setGravity(Gravity.CENTER_VERTICAL);
             titleRow.addView(title, weight()); titleRow.addView(text("›", 24, muted, false)); card.addView(titleRow);
-            TextView meta = text(format.format(new Date(e.recognizedAt)) + "  ·  " + (e.automatic ? "自动识别" : "手动分隔") + "  ·  已加密", 11, muted, false);
+            TextView meta = text(format.format(new Date(e.recognizedAt)) + "  ·  " + (e.kind == AccountData.Kind.RECORD ? (e.automatic ? "账号记录" : "手动分隔") : e.typeDescription()) + "  ·  已加密", 11, muted, false);
             meta.setPadding(0, dp(2), 0, dp(12)); card.addView(meta);
             card.setOnClickListener(v -> restore(e)); title.setOnClickListener(v -> restore(e)); meta.setOnClickListener(v -> restore(e));
-            title.setContentDescription("恢复历史记录 " + e.account); title.setFocusable(true);
+            title.setContentDescription("恢复历史记录 " + e.displayName()); title.setFocusable(true);
             LinearLayout buttons = horizontal();
-            String[] labels = {"账号", "密码", "验证码", "整组"};
-            for (int i = 0; i < labels.length; i++) {
-                final int kind = i;
-                TextView b = button(labels[i], tint, accent, 12, null);
+            int[] kinds = e.kind == AccountData.Kind.RECORD ? new int[]{0, 1, 2, 3} : e.account.isEmpty() ? new int[]{4, 2, 3} : new int[]{0, 4, 2, 3};
+            String[] labels = {"账号", "密码", "验证码", "整组", "密钥"};
+            for (int i = 0; i < kinds.length; i++) {
+                final int kind = kinds[i];
+                TextView b = button(labels[kind], tint, accent, 12, null);
                 b.setTag("history-copy-" + kind + ":" + e.account);
-                b.setContentDescription("历史记录 " + e.account + " 复制" + labels[i]);
-                b.setOnClickListener(v -> copy(kind == 0 ? e.account : kind == 1 ? e.password : kind == 2 ? e.currentCode(Totp.now()) : e.copyGroup(Totp.now()), labels[kind], b));
-                LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, dp(48), 1); if (i < 3) bp.setMarginEnd(dp(6)); buttons.addView(b, bp);
+                b.setContentDescription("历史记录 " + e.displayName() + " 复制" + labels[kind]);
+                b.setOnClickListener(v -> copy(kind == 0 ? e.account : kind == 1 ? e.password : kind == 2 ? e.currentCode(Totp.now()) : kind == 4 ? e.secret : e.copyGroup(Totp.now()), labels[kind], b));
+                LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, dp(48), 1); if (i < kinds.length - 1) bp.setMarginEnd(dp(6)); buttons.addView(b, bp);
             }
             card.addView(buttons); historyList.addView(card, spaced(12));
         }
@@ -266,24 +274,35 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         autoButton.setBackground(ripple(automatic ? surface : subtle, 9)); autoButton.setTextColor(automatic ? accent : muted); autoButton.setSelected(automatic);
         manualButton.setBackground(ripple(automatic ? subtle : surface, 9)); manualButton.setTextColor(automatic ? muted : accent); manualButton.setSelected(!automatic);
         manualBox.setVisibility(automatic ? View.GONE : View.VISIBLE);
-        detected.setText(automatic ? "连续 3 个及以上符号，如 ---、===、|||" : "使用第一处和最后一处分隔符，保留密码原文");
+        detected.setText(automatic ? "自动区分账号记录、纯密钥和 Authenticator URI" : "账号记录按分隔符拆分；纯密钥和 URI 仍会智能识别");
     }
     private void invalidateResult(String message) { editVersion++; resetResult(); setStatus(message, false); }
     private void resetResult() {
         if (data != null) { data.close(); data = null; }
         lastStep = -1; passwordVisible = false;
         if (account == null) return;
-        account.setText("等待解析"); password.setText("等待解析"); secret.setText("等待解析");
+        account.setText("等待解析"); password.setText("等待解析"); secret.setText("等待解析"); issuer.setText("");
+        fieldVisible(issuer, false); fieldVisible(account, false); fieldVisible(password, false); copyUri.setVisibility(View.GONE);
+        otpBadge.setText(OtpParameters.DEFAULT.description()); otpIdentity.setText("等待智能识别");
         password.setTransformationMethod(null); showPassword.setText("显示"); showPassword.setEnabled(false);
         code.setText("--- ---"); code.setContentDescription("当前验证码，等待解析"); countdown.setText("解析后自动生成");
         track.fraction = 0; track.invalidate();
         for (TextView b : resultButtons) { b.setEnabled(false); b.setAlpha(.4f); }
     }
     private void showResult() {
-        account.setText(data.account); password.setText(data.password); secret.setText(data.secret);
+        account.setText(data.account); password.setText(data.password); secret.setText(data.secret); issuer.setText(data.issuer);
+        fieldVisible(issuer, !data.issuer.isEmpty()); fieldVisible(account, !data.account.isEmpty()); fieldVisible(password, !data.password.isEmpty());
+        copyUri.setVisibility(data.kind == AccountData.Kind.URI ? View.VISIBLE : View.GONE);
+        otpBadge.setText(data.otp.description()); otpIdentity.setText(data.displayName());
         showPassword.setEnabled(true); passwordVisible = false; renderPassword();
         for (TextView b : resultButtons) { b.setEnabled(true); b.setAlpha(1f); }
+        findViewById(R.id.copy_account).setEnabled(!data.account.isEmpty()); findViewById(R.id.copy_password).setEnabled(!data.password.isEmpty());
+        findViewById(R.id.copy_issuer).setEnabled(!data.issuer.isEmpty());
         lastStep = -1; updateCode();
+    }
+    private void fieldVisible(TextView field, boolean visible) {
+        View group = (View) field.getParent().getParent().getParent();
+        group.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
     private void renderPassword() {
         if (data == null) return;
@@ -293,20 +312,23 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private void updateCode() {
         if (data == null) return;
         long now = Totp.now();
-        if (now / 30 != lastStep) {
-            String value = data.code(now); code.setText(getString(R.string.otp_grouped, value.substring(0, 3), value.substring(3)));
-            code.setContentDescription("当前验证码 " + value); lastStep = now / 30;
+        int period = data.otp.period;
+        if (now / period != lastStep) {
+            String value = data.code(now); int split = value.length() / 2;
+            code.setText(getString(R.string.otp_grouped, value.substring(0, split), value.substring(split)));
+            code.setContentDescription("当前验证码 " + value); lastStep = now / period;
         }
-        int remaining = 30 - (int) (now % 30);
+        int remaining = period - (int) (now % period);
         countdown.setText(getString(R.string.otp_countdown, remaining)); countdown.setTextColor(Color.parseColor(remaining <= 5 ? "#FFD292" : "#A6C8CA"));
-        track.fraction = remaining / 30f; track.warning = remaining <= 5; track.invalidate();
+        track.fraction = remaining / (float) period; track.warning = remaining <= 5; track.invalidate();
     }
     private void parseInput() {
         editVersion++; final long version = editVersion; resetResult();
         try {
-            data = AccountParser.parse(input.getText().toString(), automatic ? null : separator.getText().toString());
+            data = SmartParser.parse(input.getText().toString(), automatic ? null : separator.getText().toString());
             showResult(); hideKeyboard();
-            setStatus("解析成功 · 分隔符 " + preview(data.firstSeparator) + (data.firstSeparator.equals(data.lastSeparator) ? "" : " / " + preview(data.lastSeparator)), false);
+            setStatus("已识别：" + data.typeDescription() + (data.kind == AccountData.Kind.RECORD ? " · 分隔符 " + preview(data.firstSeparator)
+                    + (data.firstSeparator.equals(data.lastSeparator) ? "" : " / " + preview(data.lastSeparator)) : " · " + data.otp.description()), false);
             history.record(data, automatic, success -> {
                 if (isDestroyed() || editVersion != version) return;
                 if (success) { selectedId = history.entries().get(0).id; changed(); }
@@ -318,7 +340,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         try {
             ClipboardManager clipboard = getSystemService(ClipboardManager.class);
             ClipData clip = clipboard.getPrimaryClip();
-            if (clip == null || clip.getItemCount() == 0 || clip.getItemAt(0).getText() == null) { setStatus("剪贴板没有文本，请先复制一条账号记录。", true); return; }
+            if (clip == null || clip.getItemCount() == 0 || clip.getItemAt(0).getText() == null) { setStatus("剪贴板没有文本，请复制账号记录、密钥或 URI。", true); return; }
             String value = clip.getItemAt(0).getText().toString();
             if (value.length() > AccountParser.MAX_INPUT) { setStatus("内容过长，请每次只粘贴一条账号记录。", true); return; }
             input.setText(value); parseInput();
@@ -326,7 +348,8 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     }
     private void restore(HistoryEntry e) {
         editVersion++; resetResult(); suppress = true; automatic = e.automatic;
-        separator.setText(e.firstSeparator); input.setText(e.originalText()); suppress = false;
+        if (e.kind == AccountData.Kind.RECORD) separator.setText(e.firstSeparator);
+        input.setText(e.originalText()); suppress = false;
         renderMode(); data = e.open(); selectedId = e.id; showResult(); changed(); switchPage(false);
         parsePage.smoothScrollTo(0, 0); hideKeyboard(); setStatus("已恢复历史记录，可直接复制当前验证码。", false);
     }
@@ -352,7 +375,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     }
     private void showHelp() {
         new AlertDialog.Builder(this).setTitle("账号验证管家  " + BuildConfig.VERSION_NAME)
-                .setMessage("粘贴一条“账号----密码----2FA密钥”记录，点击拆分并生成。\n\n自动模式识别连续 3 个及以上符号，两处可不同。密码里的符号串会保留；复杂边界可改用手动分隔。密码的大小写和首尾空格均保留。\n\n验证码采用 SHA1 / 6 位 / 30 秒，请保持手机系统时间准确。复制时会重新计算当前验证码。\n\n最近 10 条成功识别记录使用 Android Keystore 和 AES-GCM 在本机加密保存，不联网。相同记录再次识别会置顶。\n\n历史“整组”复制账号、密码和验证码；主页面“复制全部”还包含 2FA 密钥。清空当前内容不会清空历史。\n\n历史数据绑定本机应用，卸载会删除，暂不支持从 Windows 版导入。复制内容会进入系统剪贴板，受系统和输入法剪贴板设置影响。")
+                .setMessage("直接粘贴账号记录、纯 Base32 2FA 密钥或 Authenticator URI，点击“识别并生成”。\n\n账号记录沿用连续 3 个及以上符号自动分隔；复杂边界可手动指定。密码原文完整保留。\n\n纯密钥使用 SHA1 / 6 位 / 30 秒；支持大小写、分组空白和标准末尾填充。\n\n支持 otpauth://totp/ URI，识别账号和发行方，并读取 algorithm、digits、period。算法支持 SHA1/SHA256/SHA512，位数支持 6/8，周期为正整数秒。缺省值是 SHA1 / 6 位 / 30 秒。HOTP 和批量迁移 URI 暂不支持。\n\n验证码按 URI 实际参数刷新，复制时重新计算。请保持手机系统时间准确。\n\n最近 10 条记录在本机加密保存，升级保留旧历史。纯密钥和 URI 不会虚构密码；历史只显示适用的复制按钮。“复制全部”含密钥，“整组”不含密钥。\n\n全程离线；卸载会删除历史。复制内容受系统和输入法剪贴板设置影响。")
                 .setPositiveButton("知道了", null).show();
     }
     private void setStatus(String message, boolean error) {
@@ -377,7 +400,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     @Override protected void onSaveInstanceState(Bundle out) { out.putBoolean("history", historyVisible); super.onSaveInstanceState(out); }
     @Override public Object onRetainNonConfigurationInstance() {
         Session s = new Session(); s.input = input.getText().toString(); s.separator = separator.getText().toString(); s.auto = automatic; s.history = historyVisible; s.selected = selectedId;
-        if (data != null) s.result = new HistoryEntry("", data.account, data.password, data.secret, data.firstSeparator, data.lastSeparator, automatic, 0);
+        if (data != null) s.result = HistoryEntry.fromData("", data, automatic, 0);
         return s;
     }
 

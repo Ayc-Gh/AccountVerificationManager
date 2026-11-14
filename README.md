@@ -5,20 +5,20 @@
 | 平台 | 下载 | 文档 |
 | --- | --- | --- |
 | Windows 10 / 11 | [Windows v1.4.0 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.4.0) | [Windows 使用说明](使用说明.txt) |
-| Android 8.0+ | [Android v1.0.0 安装包与源码](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.0.0) | [Android 构建与使用说明](android/README.md) |
+| Android 8.0+ | [Android v1.1.0 安装包与源码](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.1.0) | [Android 构建与使用说明](android/README.md) |
 
 ## Android 手机版
 
-Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上，无网络权限、无需 Root。保留自动/手动分隔、SHA1 / 6 位 / 30 秒 TOTP、逐项复制、最近 10 条历史和快捷恢复。历史使用 Android Keystore 与 AES-256-GCM 在本机加密保存。
+Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上，无网络权限、无需 Root。v1.1.0 新增智能识别账号记录、纯 2FA 密钥和 Authenticator URI；支持 URI 的 SHA1/SHA256/SHA512、6/8 位与实际周期，保留复制及最近 10 条历史。历史使用 Android Keystore 与 AES-256-GCM 在本机加密保存。
 
-- [下载 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.0.0/AccountVerificationManager-android-v1.0.0.apk)
+- [下载 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.1.0/AccountVerificationManager-android-v1.1.0.apk)
 - [Android 项目说明](android/README.md) · [功能对应](android/docs/项目理解与功能对应.md) · [验证报告](android/docs/验证报告.md)
-- 验证：11 组单元测试、36 项真机检查，发布版 Lint 无问题。
+- 验证：18 组单元测试、60 项真机检查，发布版 Lint 无问题。
 - Windows DPAPI 历史暂不能导入 Android；卸载会删除手机本地历史。
 
-| 解析 | 登录信息 | 历史记录 |
+| 纯密钥 | Authenticator URI | 识别结果 |
 | --- | --- | --- |
-| ![解析界面](android/docs/preview-main.png) | ![登录信息](android/docs/preview-details.png) | ![历史记录](android/docs/preview-history.png) |
+| ![纯密钥](android/docs/preview-secret.png) | ![Authenticator URI](android/docs/preview-uri.png) | ![识别结果](android/docs/preview-uri-details.png) |
 
 ## Windows 桌面版
 

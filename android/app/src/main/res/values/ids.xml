@@ -12,6 +12,10 @@
     <item name="account" type="id" />
     <item name="password" type="id" />
     <item name="secret" type="id" />
+    <item name="issuer" type="id" />
+    <item name="copy_issuer" type="id" />
+    <item name="copy_uri" type="id" />
+    <item name="otp_parameters" type="id" />
     <item name="copy_account" type="id" />
     <item name="copy_password" type="id" />
     <item name="copy_secret" type="id" />

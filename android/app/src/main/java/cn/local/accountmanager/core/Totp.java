@@ -12,11 +12,17 @@ public final class Totp {
     public static long now() { return System.currentTimeMillis() / 1000L; }
 
     public static String generate(byte[] key, long unixSeconds, int digits) {
-        if (unixSeconds < 0 || (digits != 6 && digits != 8)) throw new IllegalArgumentException("无效的验证码参数。");
+        return generate(key, unixSeconds, new OtpParameters("SHA1", digits, 30));
+    }
+
+    public static String generate(byte[] key, long unixSeconds, OtpParameters parameters) {
+        if (unixSeconds < 0) throw new IllegalArgumentException("无效的验证码时间。");
+        int digits = parameters.digits;
         try {
-            Mac mac = Mac.getInstance("HmacSHA1");
-            mac.init(new SecretKeySpec(key, "HmacSHA1"));
-            byte[] hash = mac.doFinal(ByteBuffer.allocate(8).putLong(unixSeconds / 30).array());
+            String algorithm = "Hmac" + parameters.algorithm;
+            Mac mac = Mac.getInstance(algorithm);
+            mac.init(new SecretKeySpec(key, algorithm));
+            byte[] hash = mac.doFinal(ByteBuffer.allocate(8).putLong(unixSeconds / parameters.period).array());
             int offset = hash[hash.length - 1] & 15;
             int binary = ((hash[offset] & 127) << 24) | ((hash[offset + 1] & 255) << 16)
                     | ((hash[offset + 2] & 255) << 8) | (hash[offset + 3] & 255);

@@ -48,13 +48,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '构建或验证失败。' }
     $releasePath = Join-Path $projectPath 'release'
     New-Item -ItemType Directory -Force -Path $releasePath | Out-Null
-    $apkPath = Join-Path $releasePath '账号验证管家-v1.0.0.apk'
+    $metadataPath = Join-Path $projectPath 'app\build\outputs\apk\release\output-metadata.json'
+    $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    $version = $metadata.elements[0].versionName
+    $apkName = "账号验证管家-v$version.apk"
+    $apkPath = Join-Path $releasePath $apkName
     Copy-Item -LiteralPath (Join-Path $projectPath 'app\build\outputs\apk\release\app-release.apk') -Destination $apkPath -Force
     $sdkBuildTools = Join-Path $SdkPath 'build-tools\37.0.0'
     & (Join-Path $sdkBuildTools 'apksigner.bat') verify --verbose $apkPath
     if ($LASTEXITCODE -ne 0) { throw 'APK 签名校验失败。' }
     $hash = Get-FileHash -LiteralPath $apkPath -Algorithm SHA256
-    [System.IO.File]::WriteAllText((Join-Path $releasePath 'SHA256.txt'), "$($hash.Hash)  账号验证管家-v1.0.0.apk`n", [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $releasePath "SHA256-v$version.txt"), "$($hash.Hash)  $apkName`n", [System.Text.UTF8Encoding]::new($false))
     Copy-Item -LiteralPath (Join-Path $projectPath '使用说明.txt') -Destination $releasePath -Force
     Write-Output "已生成：$apkPath"
 } finally { Pop-Location }

@@ -11,10 +11,11 @@ public final class HistoryModel {
         List<HistoryEntry> next = new ArrayList<>();
         String id = UUID.randomUUID().toString();
         for (HistoryEntry e : old) {
-            if (e.account.equals(data.account) && e.password.equals(data.password) && e.secret.equals(data.secret)) id = e.id;
+            if (e.account.equals(data.account) && e.password.equals(data.password) && e.secret.equals(data.secret)
+                    && e.kind == data.kind && e.issuer.equals(data.issuer) && e.otp.equals(data.otp)) id = e.id;
             else next.add(e);
         }
-        next.add(0, new HistoryEntry(id, data.account, data.password, data.secret, data.firstSeparator, data.lastSeparator, auto, time));
+        next.add(0, HistoryEntry.fromData(id, data, auto, time));
         return new ArrayList<>(next.subList(0, Math.min(LIMIT, next.size())));
     }
 }

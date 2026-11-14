@@ -28,7 +28,7 @@ public final class HistoryRepository {
     public void clear(Callback callback) { execute(store::clear, callback); }
     public void record(AccountData data, boolean automatic, Callback callback) {
         // Snapshot fields, not the current result's closeable key, before enqueueing work.
-        HistoryEntry snapshot = new HistoryEntry("", data.account, data.password, data.secret, data.firstSeparator, data.lastSeparator, automatic, 0);
+        HistoryEntry snapshot = HistoryEntry.fromData("", data, automatic, 0);
         execute(() -> { try (AccountData copy = snapshot.open()) { return store.record(copy, automatic); } }, callback);
     }
     private interface Operation { List<HistoryEntry> run() throws Exception; }

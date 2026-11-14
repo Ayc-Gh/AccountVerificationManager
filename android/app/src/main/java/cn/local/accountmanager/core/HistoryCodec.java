@@ -11,11 +11,13 @@ public final class HistoryCodec {
         if (entries.size() > HistoryModel.LIMIT) throw new IOException("历史记录数量异常。");
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(bytes)) {
-            out.writeInt(0x41564D48); out.writeInt(1); out.writeInt(entries.size());
+            out.writeInt(0x41564D48); out.writeInt(2); out.writeInt(entries.size());
             for (HistoryEntry e : entries) {
                 writeText(out, e.id); writeText(out, e.account); writeText(out, e.password); writeText(out, e.secret);
                 writeText(out, e.firstSeparator); writeText(out, e.lastSeparator);
                 out.writeBoolean(e.automatic); out.writeLong(e.recognizedAt);
+                writeText(out, e.kind.name()); writeText(out, e.issuer); writeText(out, e.otp.algorithm);
+                out.writeInt(e.otp.digits); out.writeInt(e.otp.period);
             }
         }
         if (bytes.size() > MAX_BYTES) throw new IOException("历史记录内容过大。");
@@ -24,7 +26,9 @@ public final class HistoryCodec {
     public static List<HistoryEntry> decode(byte[] bytes) throws IOException {
         if (bytes.length > MAX_BYTES) throw new IOException("历史记录内容过大。");
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (in.readInt() != 0x41564D48 || in.readInt() != 1) throw new IOException("历史记录版本不兼容。");
+            if (in.readInt() != 0x41564D48) throw new IOException("历史记录格式无效。");
+            int version = in.readInt();
+            if (version != 1 && version != 2) throw new IOException("历史记录版本不兼容。");
             int count = in.readInt();
             if (count < 0 || count > HistoryModel.LIMIT) throw new IOException("历史记录数量异常。");
             List<HistoryEntry> result = new ArrayList<>();
@@ -33,10 +37,14 @@ public final class HistoryCodec {
                 String id = readText(in), account = readText(in), password = readText(in), secret = readText(in), first = readText(in), last = readText(in);
                 boolean automatic = in.readBoolean(); long time = in.readLong();
                 UUID.fromString(id);
-                if (!ids.add(id) || account.isEmpty() || password.isEmpty() || first.isEmpty() || last.isEmpty() || time < 0)
+                if (!ids.add(id) || time < 0)
                     throw new IOException("历史记录字段无效。");
-                byte[] key = Base32.decode(secret); Arrays.fill(key, (byte) 0);
-                result.add(new HistoryEntry(id, account, password, secret, first, last, automatic, time));
+                AccountData.Kind kind = version == 1 ? AccountData.Kind.RECORD : AccountData.Kind.valueOf(readText(in));
+                String issuer = version == 1 ? "" : readText(in);
+                OtpParameters otp = version == 1 ? OtpParameters.DEFAULT : new OtpParameters(readText(in), in.readInt(), in.readInt());
+                try (AccountData data = new AccountData(account, password, secret, first, last, kind, issuer, otp)) {
+                    result.add(HistoryEntry.fromData(id, data, automatic, time));
+                }
             }
             if (in.available() != 0) throw new IOException("历史记录包含无效内容。");
             return result;
