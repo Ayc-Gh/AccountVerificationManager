@@ -1,0 +1,12 @@
+.checks/
+release/
+portable/
+portable-*/
+*.zip
+*.exe
+*.dll
+*.pdb
+history.bin
+history.bin.tmp.*
+.env
+.env.*
