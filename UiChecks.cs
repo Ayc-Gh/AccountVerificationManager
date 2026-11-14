@@ -57,6 +57,27 @@ internal static class UiChecks
                 FlowLayoutPanel list = Field<FlowLayoutPanel>(form, "historyList");
                 foreach (Control row in list.Controls)
                     Check(row.Width <= list.ClientSize.Width && row.Height >= 90, "record buttons fit within the history panel");
+                Field<TextBox>(form, "input").Text = Secret; Call(form, "ParseInput");
+                Check(Field<AccountData>(form, "data").InputKind == InputKind.Secret, "UI detects standalone key");
+                Check(!Field<Control>(form, "accountCopy").Enabled && !Field<Control>(form, "passwordCopy").Enabled && Field<Control>(form, "codeCopy").Enabled, "missing credentials are not copyable but key OTP is");
+                HistoryStore smart = new HistoryStore(path); smart.Load();
+                Call(form, "RestoreHistory", smart.Entries[0]);
+                Check(Field<TextBox>(form, "input").Text == Secret && Field<TextBox>(form, "password").Text == "未提供密码", "pure key history restores its own input format");
+                Field<TextBox>(form, "input").Text = "otpauth://totp/Service:uri@example.com?secret=" + Secret + "&algorithm=SHA256&digits=8&period=60";
+                Call(form, "ParseInput");
+                AccountData uriData = Field<AccountData>(form, "data");
+                Check(uriData.Period == 60 && uriData.Digits == 8 && uriData.Algorithm == "SHA256", "UI preserves URI parameters");
+                Check(Field<Label>(form, "codeLabel").Text.Replace(" ", "").Length == 8 && Field<Control>(form, "accountCopy").Enabled && !Field<Control>(form, "passwordCopy").Enabled, "8 digit URI display and missing password");
+                Field<TextBox>(form, "input").Text = "otpauth://hotp/hotp@example.com?secret=" + Secret + "&counter=1";
+                Call(form, "ParseInput");
+                Check(Field<Control>(form, "nextCode").Enabled && Field<AccountData>(form, "data").Counter == 1, "HOTP next action enabled after persisted recognition");
+                Call(form, "AdvanceHotp");
+                Check(Field<AccountData>(form, "data").Counter == 2 && Field<Label>(form, "codeLabel").Text == "359 152", "HOTP next action advances and restores correct result");
+                smart.Load(); HistoryEntry current = smart.Entries[0]; smart.AdvanceCounter(current.Id, 2);
+                Call(form, "RefreshHotp");
+                Check(Field<AccountData>(form, "data").Counter == 3 && Field<Label>(form, "codeLabel").Text == "969 429", "copy preparation refreshes counter changed in another window");
+                Field<TextBox>(form, "input").Text = "otpauth://totp/demo?secret=" + Secret + "&digits=7"; Call(form, "ParseInput");
+                Check(!Field<Control>(form, "codeCopy").Enabled && Field<AccountData>(form, "data") == null, "invalid URI settings do not leave a stale usable code");
                 form.Close();
             }
             Console.WriteLine("PASS: " + passed + " UI integration checks; startup, history restore, live OTP, failed input, panel toggle and record layout.");

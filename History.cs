@@ -17,18 +17,33 @@ namespace AccountSplit2FA
         public string LastSeparator { get; private set; }
         public bool Automatic { get; private set; }
         public DateTime RecognizedAtUtc { get; private set; }
+        public InputKind InputKind { get; private set; }
+        public OtpKind OtpKind { get; private set; }
+        public string Issuer { get; private set; }
+        public string Algorithm { get; private set; }
+        public int Digits { get; private set; }
+        public int Period { get; private set; }
+        public ulong Counter { get; private set; }
+        public bool UsesUri { get; private set; }
 
         internal HistoryEntry(Guid id, string account, string password, string secret,
-            string firstSeparator, string lastSeparator, bool automatic, DateTime recognizedAtUtc)
+            string firstSeparator, string lastSeparator, bool automatic, DateTime recognizedAtUtc,
+            InputKind inputKind = InputKind.Record, OtpKind otpKind = OtpKind.Totp, string issuer = "",
+            string algorithm = "SHA1", int digits = 6, int period = 30, ulong counter = 0, bool usesUri = false)
         {
             Id = id; Account = account; Password = password; Secret = secret;
             FirstSeparator = firstSeparator; LastSeparator = lastSeparator;
             Automatic = automatic; RecognizedAtUtc = recognizedAtUtc;
+            InputKind = inputKind; OtpKind = otpKind; Issuer = issuer; Algorithm = algorithm;
+            Digits = digits; Period = period; Counter = counter; UsesUri = usesUri;
         }
 
         public AccountData Open()
         {
-            return new AccountData(Account, Password, Secret, Base32.Decode(Secret), FirstSeparator, LastSeparator);
+            byte[] key = Base32.Decode(Secret);
+            try { return new AccountData(Account, Password, Secret, key, FirstSeparator, LastSeparator,
+                InputKind, OtpKind, Issuer, Algorithm, Digits, Period, Counter, UsesUri); }
+            catch { Array.Clear(key, 0, key.Length); throw; }
         }
 
         public string CurrentCode(long unixSeconds)
@@ -38,12 +53,23 @@ namespace AccountSplit2FA
 
         public string CopyGroup(long unixSeconds)
         {
-            return "账号：" + Account + "\r\n密码：" + Password + "\r\n验证码：" + CurrentCode(unixSeconds);
+            using (AccountData item = Open()) return item.CopyText(unixSeconds, false);
         }
 
         public string OriginalText()
         {
-            return Account + FirstSeparator + Password + LastSeparator + Secret;
+            using (AccountData item = Open()) return item.OriginalText();
+        }
+
+        public string DisplayName
+        {
+            get
+            {
+                if (Account.Length > 0) return Issuer.Length > 0 ? Issuer + " · " + Account : Account;
+                string fingerprint;
+                using (SHA256 sha = SHA256.Create()) fingerprint = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(Secret))).Replace("-", "").Substring(0, 6);
+                return (Issuer.Length > 0 ? Issuer : InputKind == InputKind.Secret ? "2FA 密钥" : "Authenticator URI") + " · " + fingerprint;
+            }
         }
     }
 
@@ -78,11 +104,14 @@ namespace AccountSplit2FA
                 for (int i = next.Count - 1; i >= 0; i--)
                 {
                     HistoryEntry item = next[i];
-                    if (item.Account == data.Account && item.Password == data.Password && item.Secret == data.Secret)
+                    if (item.Account == data.Account && item.Password == data.Password && item.Secret == data.Secret &&
+                        item.InputKind == data.InputKind && item.OtpKind == data.OtpKind && item.Algorithm == data.Algorithm &&
+                        item.Digits == data.Digits && item.Period == data.Period && item.Counter == data.Counter && item.Issuer == data.Issuer)
                     { id = item.Id; next.RemoveAt(i); }
                 }
                 next.Insert(0, new HistoryEntry(id, data.Account, data.Password, data.Secret,
-                    data.FirstSeparator, data.LastSeparator, automatic, DateTime.UtcNow));
+                    data.FirstSeparator, data.LastSeparator, automatic, DateTime.UtcNow,
+                    data.InputKind, data.OtpKind, data.Issuer, data.Algorithm, data.Digits, data.Period, data.Counter, data.UsesUri));
                 if (next.Count > Limit) next.RemoveRange(Limit, next.Count - Limit);
                 Write(next); entries = next;
             });
@@ -92,6 +121,31 @@ namespace AccountSplit2FA
         {
             // Deliberately does not read first: explicit clearing can recover an unreadable history file.
             Locked(delegate { List<HistoryEntry> empty = new List<HistoryEntry>(); Write(empty); entries = empty; });
+        }
+
+        public HistoryEntry Find(Guid id)
+        {
+            HistoryEntry found = null;
+            Locked(delegate { entries = Read(); found = entries.Find(delegate(HistoryEntry entry) { return entry.Id == id; }); });
+            return found;
+        }
+
+        public HistoryEntry AdvanceCounter(Guid id, ulong expectedCounter)
+        {
+            HistoryEntry advanced = null;
+            Locked(delegate {
+                List<HistoryEntry> next = Read();
+                int index = next.FindIndex(delegate(HistoryEntry candidate) { return candidate.Id == id; });
+                if (index < 0) throw new InvalidOperationException("记录已被清空或移出最近 10 条，请重新识别。");
+                HistoryEntry item = next[index];
+                if (item.OtpKind != OtpKind.Hotp || item.Counter != expectedCounter)
+                    throw new InvalidOperationException("计数器已在其他窗口更新，请重新打开历史记录。");
+                if (item.Counter == UInt64.MaxValue) throw new InvalidOperationException("HOTP 计数器已达上限。");
+                advanced = new HistoryEntry(item.Id, item.Account, item.Password, item.Secret, item.FirstSeparator, item.LastSeparator,
+                    item.Automatic, item.RecognizedAtUtc, item.InputKind, item.OtpKind, item.Issuer, item.Algorithm, item.Digits, item.Period, item.Counter + 1, item.UsesUri);
+                next[index] = advanced; Write(next); entries = next;
+            });
+            return advanced;
         }
 
         private void Locked(Action action)
@@ -122,7 +176,9 @@ namespace AccountSplit2FA
                 using (MemoryStream stream = new MemoryStream(plain, false))
                 using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
                 {
-                    if (reader.ReadInt32() != Magic || reader.ReadInt32() != 1) throw new InvalidDataException("历史记录版本不兼容。");
+                    if (reader.ReadInt32() != Magic) throw new InvalidDataException("历史记录格式无效。");
+                    int version = reader.ReadInt32();
+                    if (version != 1 && version != 2) throw new InvalidDataException("历史记录版本不兼容。");
                     int count = reader.ReadInt32();
                     if (count < 0 || count > Limit) throw new InvalidDataException("历史记录数量异常。");
                     List<HistoryEntry> result = new List<HistoryEntry>();
@@ -135,11 +191,20 @@ namespace AccountSplit2FA
                         string first = ReadText(reader), last = ReadText(reader);
                         bool automatic = reader.ReadBoolean();
                         long ticks = reader.ReadInt64();
+                        InputKind inputKind = version == 1 ? InputKind.Record : (InputKind)reader.ReadByte();
+                        string issuer = version == 1 ? "" : ReadText(reader);
+                        string algorithm = version == 1 ? "SHA1" : ReadText(reader);
+                        int digits = version == 1 ? 6 : reader.ReadInt32(), period = version == 1 ? 30 : reader.ReadInt32();
+                        OtpKind otpKind = version == 1 ? OtpKind.Totp : (OtpKind)reader.ReadByte();
+                        ulong counter = version == 1 ? 0 : reader.ReadUInt64();
+                        bool usesUri = version != 1 && reader.ReadBoolean();
                         if (ticks < DateTime.MinValue.Ticks || ticks > DateTime.MaxValue.Ticks ||
-                            account.Length == 0 || password.Length == 0 || first.Length == 0 || last.Length == 0)
+                            (inputKind == InputKind.Record && (account.Length == 0 || password.Length == 0 || first.Length == 0 || last.Length == 0)))
                             throw new InvalidDataException("历史记录字段无效。");
-                        byte[] key = Base32.Decode(secret); Array.Clear(key, 0, key.Length);
-                        result.Add(new HistoryEntry(id, account, password, secret, first, last, automatic, new DateTime(ticks, DateTimeKind.Utc)));
+                        HistoryEntry entry = new HistoryEntry(id, account, password, secret, first, last, automatic, new DateTime(ticks, DateTimeKind.Utc),
+                            inputKind, otpKind, issuer, algorithm, digits, period, counter, usesUri);
+                        using (AccountData validated = entry.Open()) { }
+                        result.Add(entry);
                     }
                     if (stream.Position != stream.Length) throw new InvalidDataException("历史记录包含无效内容。");
                     return result;
@@ -169,11 +234,13 @@ namespace AccountSplit2FA
                 {
                     using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, true))
                     {
-                        writer.Write(Magic); writer.Write(1); writer.Write(next.Count);
+                        writer.Write(Magic); writer.Write(2); writer.Write(next.Count);
                         foreach (HistoryEntry item in next)
                         {
                             writer.Write(item.Id.ToString("N")); writer.Write(item.Account); writer.Write(item.Password); writer.Write(item.Secret);
                             writer.Write(item.FirstSeparator); writer.Write(item.LastSeparator); writer.Write(item.Automatic); writer.Write(item.RecognizedAtUtc.Ticks);
+                            writer.Write((byte)item.InputKind); writer.Write(item.Issuer); writer.Write(item.Algorithm); writer.Write(item.Digits);
+                            writer.Write(item.Period); writer.Write((byte)item.OtpKind); writer.Write(item.Counter); writer.Write(item.UsesUri);
                         }
                     }
                     plain = stream.ToArray();

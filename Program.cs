@@ -30,7 +30,8 @@ namespace AccountSplit2FA
     {
         private TextBox input, account, password, secret, manualSeparator;
         private Label status, codeLabel, countdown, resultBadge, autoHint, placeholder;
-        private ActionButton accountCopy, passwordCopy, secretCopy, codeCopy, allCopy, autoMode, manualMode;
+        private ActionButton accountCopy, passwordCopy, secretCopy, codeCopy, allCopy, autoMode, manualMode, nextCode;
+        private TableLayoutPanel counterOptions;
         private Panel manualOptions;
         private CheckBox hidePassword;
         private ProgressTrack progress;
@@ -52,7 +53,7 @@ namespace AccountSplit2FA
         public MainForm(string historyFile)
         {
             history = new HistoryStore(historyFile);
-            Text = "账号验证管家 v1.4";
+            Text = "账号验证管家 v1.5";
             historyExpanded = SystemInformation.WorkingArea.Width >= 1240;
             ClientSize = new Size(historyExpanded ? Math.Min(1300, SystemInformation.WorkingArea.Width - 40) : 1020, 708);
             MinimumSize = new Size(historyExpanded ? 1230 : 950, 730);
@@ -117,8 +118,8 @@ namespace AccountSplit2FA
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
             TableLayoutPanel heading = Table(2, 1); heading.Dock = DockStyle.Fill;
             heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
-            heading.Controls.Add(Label("粘贴原始内容", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
-            Label hint = Label("账号 / 密码 / 2FA 密钥", 9, FontStyle.Regular, Theme.Muted); hint.TextAlign = ContentAlignment.MiddleRight;
+            heading.Controls.Add(Label("智能识别解析", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
+            Label hint = Label("账号记录 / 密钥 / URI", 9, FontStyle.Regular, Theme.Muted); hint.TextAlign = ContentAlignment.MiddleRight;
             heading.Controls.Add(hint, 1, 0); content.Controls.Add(heading, 0, 0);
             TableLayoutPanel options = Table(3, 1); options.Dock = DockStyle.Fill;
             options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240)); options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
@@ -127,14 +128,14 @@ namespace AccountSplit2FA
                 Radius = 9, Padding = new Padding(3), Margin = new Padding(0, 0, 0, 6) };
             TableLayoutPanel switches = Table(2, 1); switches.Dock = DockStyle.Fill;
             switches.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); switches.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            autoMode = Button("自动识别", ButtonKind.Selected, 114); autoMode.Dock = DockStyle.Fill; autoMode.Height = 30;
-            autoMode.AccessibleName = "自动识别分隔符"; autoMode.Click += delegate { SetSeparatorMode(true); };
+            autoMode = Button("智能识别", ButtonKind.Selected, 114); autoMode.Dock = DockStyle.Fill; autoMode.Height = 30;
+            autoMode.AccessibleName = "智能识别输入和分隔符"; autoMode.Click += delegate { SetSeparatorMode(true); };
             manualMode = Button("手动设置", ButtonKind.Ghost, 114); manualMode.Dock = DockStyle.Fill; manualMode.Height = 30;
             manualMode.AccessibleName = "手动设置分隔符"; manualMode.Click += delegate { SetSeparatorMode(false); };
             switches.Controls.Add(autoMode, 0, 0); switches.Controls.Add(manualMode, 1, 0); switcher.Controls.Add(switches);
             options.Controls.Add(switcher, 0, 0);
             Panel modeDetails = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
-            autoHint = Label("连续 ≥3 个符号 · 支持 ---、===、||| 等", 9, FontStyle.Regular, Theme.Muted);
+            autoHint = Label("直接粘贴账号记录、纯 2FA 密钥或 Authenticator URI", 8.5F, FontStyle.Regular, Theme.Muted);
             manualOptions = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Visible = false };
             TableLayoutPanel manualLayout = Table(3, 1); manualLayout.Dock = DockStyle.Fill;
             manualLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64)); manualLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
@@ -149,7 +150,7 @@ namespace AccountSplit2FA
             InputFrame inputFrame = new InputFrame { Dock = DockStyle.Fill, Padding = new Padding(13, 12, 13, 9) };
             input = new TextBox { Multiline = true, AcceptsReturn = false, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
                 Dock = DockStyle.Fill, Font = new Font("Consolas", 11), BackColor = Theme.Surface, ForeColor = Theme.Ink, MaxLength = 16384, AccessibleName = "原始账号内容" };
-            placeholder = Label("账号----密码----2FA密钥", 11, FontStyle.Regular, Color.FromArgb(153, 165, 184));
+            placeholder = Label("账号----密码----密钥，或纯密钥 / otpauth://...", 11, FontStyle.Regular, Color.FromArgb(153, 165, 184));
             placeholder.Font = new Font("Consolas", 11); placeholder.BackColor = Theme.Surface; placeholder.TextAlign = ContentAlignment.TopLeft;
             placeholder.Click += delegate { input.Focus(); };
             inputFrame.Controls.Add(input); inputFrame.Controls.Add(placeholder); placeholder.BringToFront(); inputFrame.Watch(input);
@@ -158,7 +159,7 @@ namespace AccountSplit2FA
             TableLayoutPanel actions = Table(3, 1); actions.Dock = DockStyle.Fill; actions.Padding = new Padding(0, 12, 0, 0);
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 162)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            ActionButton parse = Button("拆分并生成", ButtonKind.Primary, 150); parse.Glyph = ButtonGlyph.Arrow;
+            ActionButton parse = Button("识别并生成", ButtonKind.Primary, 150); parse.Glyph = ButtonGlyph.Arrow;
             parse.Click += delegate { ParseInput(); }; actions.Controls.Add(parse, 0, 0);
             ActionButton paste = Button("粘贴并解析", ButtonKind.Secondary, 146); paste.Glyph = ButtonGlyph.Clipboard;
             paste.Click += delegate { PasteAndParse(); }; actions.Controls.Add(paste, 1, 0);
@@ -173,10 +174,10 @@ namespace AccountSplit2FA
             for (int i = 0; i < 3; i++) content.RowStyles.Add(new RowStyle(SizeType.Percent, 33.333F));
             TableLayoutPanel header = Table(2, 1); header.Dock = DockStyle.Fill;
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 98));
-            header.Controls.Add(Label("登录信息", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
+            header.Controls.Add(Label("识别结果", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
             hidePassword = new CheckBox { Text = "隐藏密码", AutoSize = false, Dock = DockStyle.Fill, ForeColor = Theme.Muted,
                 Font = Theme.Font(8.5F, FontStyle.Regular), BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleLeft };
-            hidePassword.CheckedChanged += delegate { if (password != null) password.UseSystemPasswordChar = hidePassword.Checked; };
+            hidePassword.CheckedChanged += delegate { if (password != null) password.UseSystemPasswordChar = hidePassword.Checked && data != null && data.Password.Length > 0; };
             header.Controls.Add(hidePassword, 1, 0); content.Controls.Add(header, 0, 0);
             content.Controls.Add(CreateField("账号", "复制账号", out account, out accountCopy), 0, 1);
             content.Controls.Add(CreateField("密码", "复制密码", out password, out passwordCopy), 0, 2);
@@ -193,14 +194,26 @@ namespace AccountSplit2FA
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 18)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            content.Controls.Add(Label("动态验证码", 12.5F, FontStyle.Bold, Color.White), 0, 0);
+            content.Controls.Add(Label("2FA 验证码", 12.5F, FontStyle.Bold, Color.White), 0, 0);
             resultBadge = Label("解析后自动生成，每 30 秒刷新", 8.5F, FontStyle.Regular, Color.FromArgb(158, 177, 208)); content.Controls.Add(resultBadge, 0, 1);
             codeLabel = Label("--- ---", 41, FontStyle.Bold, Color.FromArgb(121, 151, 197)); codeLabel.Font = new Font("Consolas", 41, FontStyle.Bold);
             codeLabel.TextAlign = ContentAlignment.MiddleCenter; codeLabel.AccessibleName = "当前六位验证码，等待解析"; content.Controls.Add(codeLabel, 0, 2);
-            countdown = Label("等待解析", 9, FontStyle.Regular, Color.FromArgb(174, 190, 216)); countdown.TextAlign = ContentAlignment.MiddleCenter; content.Controls.Add(countdown, 0, 3);
+            counterOptions = Table(2, 1); counterOptions.Dock = DockStyle.Fill;
+            counterOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); counterOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
+            countdown = Label("等待解析", 9, FontStyle.Regular, Color.FromArgb(174, 190, 216)); countdown.TextAlign = ContentAlignment.MiddleCenter; countdown.AutoEllipsis = true;
+            counterOptions.Controls.Add(countdown, 0, 0);
+            nextCode = Button("下一个", ButtonKind.OnDark, 92); nextCode.Dock = DockStyle.Fill; nextCode.Font = Theme.Font(8, FontStyle.Regular);
+            nextCode.AccessibleName = "HOTP 计数器加一并保存"; nextCode.Visible = false;
+            nextCode.Click += delegate { AdvanceHotp(); }; counterOptions.Controls.Add(nextCode, 1, 0);
+            content.Controls.Add(counterOptions, 0, 3);
             progress = new ProgressTrack { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 10) }; content.Controls.Add(progress, 0, 4);
             codeCopy = Button("复制验证码", ButtonKind.OnDark, 240); codeCopy.Dock = DockStyle.Fill; codeCopy.Glyph = ButtonGlyph.Copy; codeCopy.Font = Theme.Font(10, FontStyle.Bold);
-            codeCopy.Click += delegate { if (data != null) { UpdateCode(); Copy(data.Code(Totp.UnixNow()), "验证码", codeCopy); } };
+            codeCopy.Click += delegate {
+                if (data == null) return;
+                try { RefreshHotp(); UpdateCode(); Copy(data.Code(Totp.UnixNow()), "验证码", codeCopy); }
+                catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+                catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取最新计数器，请重新打开历史记录。", true); }
+            };
             content.Controls.Add(codeCopy, 0, 5); card.Controls.Add(content); return card;
         }
         private Control CreateFooter()
@@ -210,7 +223,12 @@ namespace AccountSplit2FA
             status = Label("", 8.5F, FontStyle.Regular, Theme.Muted); status.AutoEllipsis = true; footer.Controls.Add(status, 0, 0);
             Label shortcut = Label("Ctrl+Enter  解析", 8, FontStyle.Regular, Theme.Muted); shortcut.TextAlign = ContentAlignment.MiddleRight; shortcut.Padding = new Padding(0, 0, 14, 0); footer.Controls.Add(shortcut, 1, 0);
             allCopy = Button("复制全部", ButtonKind.Ghost, 120); allCopy.Dock = DockStyle.Fill; allCopy.Glyph = ButtonGlyph.Copy; allCopy.AccessibleName = "复制全部结果";
-            allCopy.Click += delegate { if (data != null) Copy("账号：" + data.Account + "\r\n密码：" + data.Password + "\r\n2FA密钥：" + data.Secret + "\r\n验证码：" + data.Code(Totp.UnixNow()), "全部结果", allCopy); };
+            allCopy.Click += delegate {
+                if (data == null) return;
+                try { RefreshHotp(); Copy(data.CopyText(Totp.UnixNow(), true), "全部结果", allCopy); }
+                catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+                catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取最新计数器，请重新打开历史记录。", true); }
+            };
             footer.Controls.Add(allCopy, 2, 0); return footer;
         }
         private Control CreateField(string label, string accessibleCopy, out TextBox value, out ActionButton copy)
@@ -254,32 +272,44 @@ namespace AccountSplit2FA
         {
             placeholder.Visible = input.TextLength == 0;
             ResetResult();
+            selectedHistory = Guid.Empty;
             try {
-                data = AccountParser.Parse(input.Text, automatic ? null : manualSeparator.Text);
+                data = SmartParser.Parse(input.Text, automatic ? null : manualSeparator.Text);
                 ShowResult();
-                SetStatus("解析成功 · 分隔符 " + SeparatorPreview(data.FirstSeparator) + (data.FirstSeparator == data.LastSeparator ? "" : " / " + SeparatorPreview(data.LastSeparator)), false);
+                string kind = data.InputKind == InputKind.Secret ? "纯 2FA 密钥" : data.InputKind == InputKind.AuthenticatorUri ? "Authenticator URI" : data.UsesUri ? "账号记录 + Authenticator URI" : "账号记录";
+                SetStatus("已识别 " + kind + (data.InputKind == InputKind.Record ? " · 分隔符 " + SeparatorPreview(data.FirstSeparator) + (data.FirstSeparator == data.LastSeparator ? "" : " / " + SeparatorPreview(data.LastSeparator)) : ""), false);
                 try {
                     history.Record(data, automatic); selectedHistory = history.Entries[0].Id; RefreshHistory();
+                    nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
                 } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("解析成功，但历史记录保存失败；请检查本机历史文件。", true); }
             } catch (FormatException error) { SetStatus(error.Message, true); }
         }
         private static string SeparatorPreview(string value) { value = value.Replace("\t", "\\t"); return "「" + (value.Length > 12 ? value.Substring(0, 12) + "…" : value) + "」"; }
-        private void SetCopyEnabled(bool enabled) { accountCopy.Enabled = passwordCopy.Enabled = secretCopy.Enabled = codeCopy.Enabled = allCopy.Enabled = enabled; }
+        private void SetCopyEnabled(bool enabled)
+        {
+            accountCopy.Enabled = enabled && data != null && data.Account.Length > 0;
+            passwordCopy.Enabled = enabled && data != null && data.Password.Length > 0;
+            secretCopy.Enabled = codeCopy.Enabled = allCopy.Enabled = enabled;
+        }
         private void ClearInput() { input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
         private void ResetResult()
         {
             if (data != null) { data.Dispose(); data = null; } lastStep = -1;
             account.Text = password.Text = secret.Text = "等待解析"; account.ForeColor = password.ForeColor = secret.ForeColor = Color.FromArgb(160, 172, 190);
+            password.UseSystemPasswordChar = false;
             codeLabel.Text = "--- ---"; codeLabel.ForeColor = Color.FromArgb(121, 151, 197); codeLabel.AccessibleName = "当前六位验证码，等待解析";
             resultBadge.Text = "解析后自动生成，每 30 秒刷新"; countdown.Text = "等待解析"; countdown.ForeColor = Color.FromArgb(174, 190, 216); progress.Fraction = 0; SetCopyEnabled(false);
+            nextCode.Visible = false; nextCode.Enabled = false; counterOptions.ColumnStyles[1].Width = 0; progress.Visible = true;
         }
         private void UpdateCode()
         {
             if (data == null) return; long now = Totp.UnixNow();
-            if (now / 30 != lastStep) { string code = data.Code(now); codeLabel.Text = code.Substring(0, 3) + " " + code.Substring(3); codeLabel.ForeColor = Color.White; codeLabel.AccessibleName = "当前验证码 " + code; lastStep = now / 30; }
-            int remaining = 30 - (int)(now % 30); countdown.Text = remaining + " 秒后更新";
+            long step = data.OtpKind == OtpKind.Hotp ? 0 : now / data.Period;
+            if (step != lastStep) { string code = data.Code(now); int group = code.Length / 2; codeLabel.Text = code.Substring(0, group) + " " + code.Substring(group); codeLabel.ForeColor = Color.White; codeLabel.AccessibleName = "当前验证码 " + code; lastStep = step; }
+            if (data.OtpKind == OtpKind.Hotp) { countdown.Text = "计数器 " + data.Counter; return; }
+            int remaining = data.Period - (int)(now % data.Period); countdown.Text = remaining + " 秒后更新";
             countdown.ForeColor = remaining <= 5 ? Color.FromArgb(255, 199, 112) : Color.FromArgb(174, 190, 216);
-            progress.BarColor = remaining <= 5 ? Color.FromArgb(255, 194, 99) : Color.FromArgb(123, 164, 255); progress.Fraction = remaining / 30F;
+            progress.BarColor = remaining <= 5 ? Color.FromArgb(255, 194, 99) : Color.FromArgb(123, 164, 255); progress.Fraction = remaining / (float)data.Period;
         }
         private void Copy(string value, string label, ActionButton button)
         {
@@ -291,9 +321,17 @@ namespace AccountSplit2FA
 
         private void ShowResult()
         {
-            account.Text = data.Account; password.Text = data.Password; secret.Text = data.Secret;
-            account.ForeColor = password.ForeColor = secret.ForeColor = Theme.Ink;
-            resultBadge.Text = "6 位验证码 · 每 30 秒自动刷新";
+            account.Text = data.Account.Length > 0 ? data.Account : "未提供账号";
+            password.Text = data.Password.Length > 0 ? data.Password : "未提供密码"; secret.Text = data.Secret;
+            account.ForeColor = data.Account.Length > 0 ? Theme.Ink : Theme.Muted;
+            password.ForeColor = data.Password.Length > 0 ? Theme.Ink : Theme.Muted; secret.ForeColor = Theme.Ink;
+            password.UseSystemPasswordChar = hidePassword.Checked && data.Password.Length > 0;
+            resultBadge.Text = (data.Issuer.Length > 0 ? data.Issuer + " · " : "") + data.Algorithm + " · " + data.Digits + " 位 · " + (data.OtpKind == OtpKind.Hotp ? "HOTP" : data.Period + " 秒");
+            resultBadge.AutoEllipsis = true;
+            float fontSize = data.Digits == 8 ? 34 : 41;
+            if (codeLabel.Font.Size != fontSize) { Font old = codeLabel.Font; codeLabel.Font = new Font("Consolas", fontSize, FontStyle.Bold); old.Dispose(); }
+            bool hotp = data.OtpKind == OtpKind.Hotp; nextCode.Visible = hotp;
+            nextCode.Enabled = false; counterOptions.ColumnStyles[1].Width = hotp ? 92 : 0; progress.Visible = !hotp;
             SetCopyEnabled(true); lastStep = -1; UpdateCode();
         }
 
@@ -369,8 +407,8 @@ namespace AccountSplit2FA
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            ActionButton open = Button(entry.Account, ButtonKind.Ghost, 200); open.Dock = DockStyle.Fill; open.AlignLeft = true;
-            open.Font = Theme.Font(9, FontStyle.Bold); open.AccessibleName = "打开历史记录 " + entry.Account;
+            ActionButton open = Button(entry.DisplayName, ButtonKind.Ghost, 200); open.Dock = DockStyle.Fill; open.AlignLeft = true;
+            open.Font = Theme.Font(9, FontStyle.Bold); open.AccessibleName = "打开历史记录 " + entry.DisplayName;
             open.Click += delegate { RestoreHistory(entry); }; content.Controls.Add(open, 0, 0);
             Label time = Label(entry.RecognizedAtUtc.ToLocalTime().ToString("MM-dd HH:mm") + "  ·  已加密保存", 8, FontStyle.Regular, Theme.Muted);
             time.Padding = new Padding(8, 0, 0, 0); time.Click += delegate { RestoreHistory(entry); }; content.Controls.Add(time, 0, 1);
@@ -381,11 +419,8 @@ namespace AccountSplit2FA
                 int kind = i; ActionButton copy = Button(captions[i], ButtonKind.Copy, 48); copy.Dock = DockStyle.Fill;
                 copy.Font = Theme.Font(8, FontStyle.Regular); copy.Margin = new Padding(1, 0, 1, 0);
                 copy.AccessibleName = "历史记录 " + entry.Account + " 复制" + captions[i];
-                copy.Click += delegate {
-                    string value = kind == 0 ? entry.Account : kind == 1 ? entry.Password :
-                        kind == 2 ? entry.CurrentCode(Totp.UnixNow()) : entry.CopyGroup(Totp.UnixNow());
-                    Copy(value, "历史" + captions[kind], copy);
-                };
+                copy.Enabled = kind == 0 ? entry.Account.Length > 0 : kind == 1 ? entry.Password.Length > 0 : true;
+                copy.Click += delegate { CopyHistory(entry.Id, kind, captions[kind], copy); };
                 actions.Controls.Add(copy, i, 0);
             }
             content.Controls.Add(actions, 0, 2); card.Click += delegate { RestoreHistory(entry); };
@@ -398,6 +433,7 @@ namespace AccountSplit2FA
             if (!entry.Automatic) manualSeparator.Text = entry.FirstSeparator;
             input.Text = entry.OriginalText(); placeholder.Visible = false;
             data = entry.Open(); ShowResult(); selectedHistory = entry.Id; RefreshHistory();
+            nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
             SetStatus("已恢复历史记录，可复制账号、密码和当前验证码。", false);
         }
 
@@ -405,6 +441,35 @@ namespace AccountSplit2FA
         {
             return error is IOException || error is UnauthorizedAccessException || error is CryptographicException ||
                 error is FormatException || error is System.Security.SecurityException;
+        }
+
+        private void AdvanceHotp()
+        {
+            if (data == null || data.OtpKind != OtpKind.Hotp) return;
+            try { HistoryEntry entry = history.AdvanceCounter(selectedHistory, data.Counter); RestoreHistory(entry); SetStatus("HOTP 计数器已加一并保存，复制不会再次递增。", false); }
+            catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+            catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("计数器保存失败，当前验证码未改变。", true); }
+        }
+
+        private void RefreshHotp()
+        {
+            if (data == null || data.OtpKind != OtpKind.Hotp || selectedHistory == Guid.Empty) return;
+            HistoryEntry current = history.Find(selectedHistory);
+            if (current == null) throw new InvalidOperationException("历史记录已移除，请重新识别当前 URI。");
+            if (current.Counter != data.Counter) RestoreHistory(current);
+        }
+
+        private void CopyHistory(Guid id, int kind, string caption, ActionButton button)
+        {
+            try {
+                HistoryEntry current = history.Find(id);
+                if (current == null) throw new InvalidOperationException("历史记录已更新，请重新展开历史面板。");
+                string value = kind == 0 ? current.Account : kind == 1 ? current.Password :
+                    kind == 2 ? current.CurrentCode(Totp.UnixNow()) : current.CopyGroup(Totp.UnixNow());
+                Copy(value, "历史" + caption, button);
+            }
+            catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+            catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取历史记录，请稍后重试。", true); }
         }
     }
     internal static class Shapes

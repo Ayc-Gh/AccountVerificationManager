@@ -18,6 +18,26 @@ internal static class HistoryTests
     {
         using (AccountData data = AccountParser.Parse(account + "----" + password + "----" + Secret)) store.Record(data, true);
     }
+    private static void SmartRecord(HistoryStore store, string text)
+    {
+        using (AccountData data = SmartParser.Parse(text)) store.Record(data, true);
+    }
+    private static void LegacyFile(string path, Guid id)
+    {
+        byte[] plain;
+        using (MemoryStream stream = new MemoryStream())
+        {
+            using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, true))
+            {
+                writer.Write(0x41564D48); writer.Write(1); writer.Write(1);
+                writer.Write(id.ToString("N")); writer.Write("legacy@example.com"); writer.Write("Legacy%Password"); writer.Write(Secret);
+                writer.Write("----"); writer.Write("----"); writer.Write(true); writer.Write(DateTime.UtcNow.Ticks);
+            }
+            plain = stream.ToArray();
+        }
+        try { File.WriteAllBytes(path, ProtectedData.Protect(plain, Encoding.UTF8.GetBytes("AccountVerificationManager.History.v1"), DataProtectionScope.CurrentUser)); }
+        finally { Array.Clear(plain, 0, plain.Length); }
+    }
     private static void Main()
     {
         string folder = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "history-tests-" + Guid.NewGuid().ToString("N"));
@@ -65,6 +85,38 @@ internal static class HistoryTests
                 Check(failed && reopened.Entries[0].Account == "window-b@example.com", "failed save does not report or display a stored record");
             }
             Check(Directory.GetFiles(folder, "*.tmp.*").Length == 0, "no temporary history files left");
+            SmartRecord(reopened, Secret);
+            HistoryEntry pure = reopened.Entries[0]; reopened.Load(); pure = reopened.Find(pure.Id);
+            Check(pure.InputKind == InputKind.Secret && pure.Account == "" && pure.Password == "", "pure key persists without invented credentials");
+            Check(pure.OriginalText() == Secret && pure.CopyGroup(59) == "验证码：287082", "pure key restore and group copying");
+            string rich = "otpauth://totp/Service:uri@example.com?secret=" + Secret + "&issuer=Service&algorithm=SHA512&digits=8&period=60";
+            SmartRecord(reopened, rich); HistoryEntry uri = reopened.Entries[0]; reopened.Load(); uri = reopened.Find(uri.Id);
+            Check(uri.InputKind == InputKind.AuthenticatorUri && uri.Algorithm == "SHA512" && uri.Digits == 8 && uri.Period == 60 && uri.Issuer == "Service", "URI settings persist across restart");
+            using (AccountData restored = SmartParser.Parse(uri.OriginalText())) Check(restored.Code(59) == uri.CurrentCode(59) && restored.Password == "", "URI history reconstructs parameterized URI");
+            SmartRecord(reopened, rich.Replace("period=60", "period=30"));
+            Check(reopened.Entries[0].Period == 30 && reopened.Find(uri.Id).Period == 60, "different OTP settings do not collapse as duplicates");
+            SmartRecord(reopened, "otpauth://hotp/hotp@example.com?secret=" + Secret + "&counter=1");
+            HistoryEntry counterEntry = reopened.Entries[0]; int countBefore = reopened.Entries.Count;
+            HistoryEntry advanced = reopened.AdvanceCounter(counterEntry.Id, 1);
+            Check(advanced.Counter == 2 && advanced.CurrentCode(0) == "359152", "explicit HOTP advance generates next code");
+            Check(reopened.Find(counterEntry.Id).Counter == 2 && reopened.Entries.Count == countBefore, "HOTP counter persists without creating another record");
+            bool staleRejected = false;
+            try { reopened.AdvanceCounter(counterEntry.Id, 1); } catch (InvalidOperationException) { staleRejected = true; }
+            Check(staleRejected && reopened.Find(counterEntry.Id).Counter == 2, "stale window cannot overwrite a newer counter");
+            advanced.CopyGroup(10); advanced.CurrentCode(99999);
+            Check(reopened.Find(counterEntry.Id).Counter == 2, "copying never consumes HOTP counter");
+            SmartRecord(reopened, "otpauth://hotp/max@example.com?secret=" + Secret + "&counter=18446744073709551615");
+            bool overflowRejected = false;
+            try { reopened.AdvanceCounter(reopened.Entries[0].Id, UInt64.MaxValue); } catch (InvalidOperationException) { overflowRejected = true; }
+            Check(overflowRejected && reopened.Entries[0].Counter == UInt64.MaxValue, "counter overflow leaves history intact");
+            string legacyPath = Path.Combine(folder, "legacy.bin"); Guid legacyId = Guid.NewGuid(); LegacyFile(legacyPath, legacyId);
+            HistoryStore legacy = new HistoryStore(legacyPath); legacy.Load();
+            Check(legacy.Entries[0].Id == legacyId && legacy.Entries[0].CurrentCode(59) == "287082" && legacy.Entries[0].Period == 30, "read version 1 history with original defaults");
+            SmartRecord(legacy, Secret); legacy.Load();
+            Check(legacy.Entries.Count == 2 && legacy.Entries[1].Id == legacyId && legacy.Entries[1].Password == "Legacy%Password", "version 2 write preserves legacy records and IDs");
+            byte[] migrated = ProtectedData.Unprotect(File.ReadAllBytes(legacyPath), Encoding.UTF8.GetBytes("AccountVerificationManager.History.v1"), DataProtectionScope.CurrentUser);
+            try { using (BinaryReader reader = new BinaryReader(new MemoryStream(migrated))) { reader.ReadInt32(); Check(reader.ReadInt32() == 2, "migration remains encrypted and uses version 2"); } }
+            finally { Array.Clear(migrated, 0, migrated.Length); }
             byte[] corrupt = { 1, 2, 3, 4, 5 }; File.WriteAllBytes(path, corrupt);
             bool corruptRead = false, corruptWrite = false;
             try { new HistoryStore(path).Load(); } catch (CryptographicException) { corruptRead = true; }

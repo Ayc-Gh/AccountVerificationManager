@@ -1,4 +1,4 @@
-param([string]$OutputDirectory = 'release')
+﻿param([string]$OutputDirectory = 'release')
 $ErrorActionPreference = 'Stop'
 $projectDir = $PSScriptRoot
 $compilerPath = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -42,6 +42,12 @@ $testExe = Join-Path $checksDir 'Tests.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed.' }
 & $testExe
 if ($LASTEXITCODE -ne 0) { throw 'Core verification failed.' }
+
+$smartTestExe = Join-Path $checksDir 'SmartTests.exe'
+& $compilerPath /nologo /target:exe /optimize+ "/out:$smartTestExe" $corePath (Join-Path $projectDir 'SmartTests.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Smart recognition test compilation failed.' }
+& $smartTestExe
+if ($LASTEXITCODE -ne 0) { throw 'Smart recognition verification failed.' }
 
 $historyPath = Join-Path $projectDir 'History.cs'
 $historyTestExe = Join-Path $checksDir 'HistoryTests.exe'
