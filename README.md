@@ -1,8 +1,32 @@
 # 账号验证管家
 
+离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版。
+
+| 平台 | 下载 | 文档 |
+| --- | --- | --- |
+| Windows 10 / 11 | [Windows v1.4.0 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.4.0) | [Windows 使用说明](使用说明.txt) |
+| Android 8.0+ | [Android v1.0.0 安装包与源码](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.0.0) | [Android 构建与使用说明](android/README.md) |
+
+## Android 手机版
+
+Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上，无网络权限、无需 Root。保留自动/手动分隔、SHA1 / 6 位 / 30 秒 TOTP、逐项复制、最近 10 条历史和快捷恢复。历史使用 Android Keystore 与 AES-256-GCM 在本机加密保存。
+
+- [下载 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.0.0/AccountVerificationManager-android-v1.0.0.apk)
+- [Android 项目说明](android/README.md) · [功能对应](android/docs/项目理解与功能对应.md) · [验证报告](android/docs/验证报告.md)
+- 验证：11 组单元测试、36 项真机检查，发布版 Lint 无问题。
+- Windows DPAPI 历史暂不能导入 Android；卸载会删除手机本地历史。
+
+| 解析 | 登录信息 | 历史记录 |
+| --- | --- | --- |
+| ![解析界面](android/docs/preview-main.png) | ![登录信息](android/docs/preview-details.png) | ![历史记录](android/docs/preview-history.png) |
+
+## Windows 桌面版
+
+以下为 Windows v1.4.0 的使用和构建说明。
+
 一个在 Windows 本机运行的账号信息整理与 2FA 验证码工具。粘贴一条包含账号、密码和 2FA 密钥的记录，即可分项查看并复制。
 
-[下载最新版本](https://github.com/Ayc-Gh/AccountVerificationManager/releases/latest) · [详细使用说明](./使用说明.txt)
+[下载 Windows v1.4.0](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.4.0) · [详细使用说明](./使用说明.txt)
 
 ## 使用
 

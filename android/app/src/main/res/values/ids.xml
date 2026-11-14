@@ -1,0 +1,25 @@
+<resources>
+    <item name="input" type="id" />
+    <item name="manual_separator" type="id" />
+    <item name="auto_mode" type="id" />
+    <item name="manual_mode" type="id" />
+    <item name="parse" type="id" />
+    <item name="paste" type="id" />
+    <item name="clear_input" type="id" />
+    <item name="status" type="id" />
+    <item name="code" type="id" />
+    <item name="countdown" type="id" />
+    <item name="account" type="id" />
+    <item name="password" type="id" />
+    <item name="secret" type="id" />
+    <item name="copy_account" type="id" />
+    <item name="copy_password" type="id" />
+    <item name="copy_secret" type="id" />
+    <item name="copy_code" type="id" />
+    <item name="copy_all" type="id" />
+    <item name="show_password" type="id" />
+    <item name="nav_parse" type="id" />
+    <item name="nav_history" type="id" />
+    <item name="history_list" type="id" />
+    <item name="clear_history" type="id" />
+</resources>

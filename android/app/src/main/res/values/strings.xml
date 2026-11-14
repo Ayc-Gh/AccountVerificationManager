@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">账号验证管家</string>
+    <string name="history_count">%1$d / 10 条 · 点击记录恢复</string>
+    <string name="history_nav">历史记录</string>
+    <string name="history_nav_count">历史记录  %1$d</string>
+    <string name="otp_grouped">%1$s %2$s</string>
+    <string name="otp_countdown">%1$d 秒后更新</string>
+</resources>
