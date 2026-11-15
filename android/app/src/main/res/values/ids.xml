@@ -5,6 +5,8 @@
     <item name="manual_mode" type="id" />
     <item name="parse" type="id" />
     <item name="paste" type="id" />
+    <item name="qr_photo" type="id" />
+    <item name="qr_upload" type="id" />
     <item name="clear_input" type="id" />
     <item name="status" type="id" />
     <item name="code" type="id" />
@@ -26,4 +28,13 @@
     <item name="nav_history" type="id" />
     <item name="history_list" type="id" />
     <item name="clear_history" type="id" />
+    <item name="history_name_input" type="id" />
+    <item name="replace_otp" type="id" />
+    <item name="replace_otp_input" type="id" />
+    <item name="replace_otp_code" type="id" />
+    <item name="replace_otp_copy" type="id" />
+    <item name="replace_otp_photo" type="id" />
+    <item name="replace_otp_upload" type="id" />
+    <item name="replace_otp_paste" type="id" />
+    <item name="replace_otp_old_copy" type="id" />
 </resources>

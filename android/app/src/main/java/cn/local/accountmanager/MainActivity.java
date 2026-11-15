@@ -16,8 +16,11 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import cn.local.accountmanager.core.*;
 import cn.local.accountmanager.storage.HistoryRepository;
+import cn.local.accountmanager.qr.QrImportActivity;
 
 public final class MainActivity extends Activity implements HistoryRepository.Listener {
+    private static final int QR_IMPORT = 202;
+    private static final int QR_REPLACE = 203;
     private int background, surface, ink, muted, line, subtle, accent, tint, danger;
     private final Handler timer = new Handler(Looper.getMainLooper());
     private HistoryRepository history;
@@ -29,6 +32,9 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private Track track;
     private final List<TextView> resultButtons = new ArrayList<>();
     private AccountData data;
+    private AlertDialog namingDialog;
+    private OtpReplacementEditor replacementEditor;
+    private TextView replaceOtpButton;
     private boolean automatic = true, suppress, passwordVisible, historyVisible;
     private long lastStep = -1, editVersion;
     private String selectedId = "";
@@ -39,10 +45,12 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         String input, separator, selected;
         boolean auto, history;
         HistoryEntry result;
+        OtpReplacementEditor.Draft replacement;
     }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        PrivacyProtection.apply(this);
         history = ((ManagerApplication) getApplication()).history;
         palette();
         getWindow().setStatusBarColor(Color.TRANSPARENT);
@@ -66,6 +74,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
             switchPage(previous.history);
         } else if (state != null) switchPage(state.getBoolean("history"));
         changed();
+        if (previous != null && previous.replacement != null) openReplacement(previous.replacement);
     }
 
     private void palette() {
@@ -151,6 +160,11 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         TextView parse = button("识别并生成", accent, isDark() ? Color.parseColor("#102C26") : Color.WHITE, 14, this::parseInput); parse.setId(R.id.parse);
         LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dp(50), 1); a.setMarginEnd(dp(8)); actions.addView(paste, a);
         actions.addView(parse, new LinearLayout.LayoutParams(0, dp(50), 1)); card.addView(actions, spaced(12));
+        LinearLayout qrActions = horizontal();
+        TextView photo = button("拍照识别二维码", subtle, accent, 13, () -> openQr(QrImportActivity.PHOTO)); photo.setId(R.id.qr_photo);
+        TextView upload = button("上传二维码图片", subtle, accent, 13, () -> openQr(QrImportActivity.UPLOAD)); upload.setId(R.id.qr_upload);
+        LinearLayout.LayoutParams q = new LinearLayout.LayoutParams(0, dp(48), 1); q.setMarginEnd(dp(8)); qrActions.addView(photo, q);
+        qrActions.addView(upload, new LinearLayout.LayoutParams(0, dp(48), 1)); card.addView(qrActions, spaced(8));
         status = text("自动识别输入类型，按密钥或 URI 参数生成验证码", 11, muted, false); status.setId(R.id.status);
         status.setPadding(0, dp(10), 0, 0); status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); card.addView(status);
         input.addTextChangedListener(watcher(() -> { if (!suppress) invalidateResult("内容已更改，请重新解析。"); }));
@@ -166,6 +180,8 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         card.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.parseColor("#193C46"), Color.parseColor("#102B34")}));
         ((GradientDrawable) card.getBackground()).setCornerRadius(dp(20)); content.addView(card, spaced(16));
         LinearLayout top = horizontal(); TextView title = text("2FA 动态验证码", 14, Color.parseColor("#D3E8E8"), true); top.addView(title, weight());
+        replaceOtpButton = button("更换 2FA", Color.parseColor("#2B4F58"), Color.WHITE, 12, this::promptReplacement); replaceOtpButton.setId(R.id.replace_otp);
+        top.addView(replaceOtpButton, size(90, 40));
         card.addView(top);
         otpIdentity = text("等待智能识别", 11, Color.parseColor("#D3E8E8"), false); otpIdentity.setMaxLines(2); otpIdentity.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(otpIdentity, spaced(8));
@@ -225,6 +241,8 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     @Override public void changed() {
         if (historyList == null || isDestroyed()) return;
         List<HistoryEntry> entries = history.entries();
+        replaceOtpButton.setEnabled(data != null && entries.stream().anyMatch(e -> e.id.equals(selectedId)));
+        replaceOtpButton.setAlpha(replaceOtpButton.isEnabled() ? 1f : .4f);
         countLabel.setText(getString(R.string.history_count, entries.size()));
         historyNav.setText(entries.isEmpty() ? getString(R.string.history_nav) : getString(R.string.history_nav_count, entries.size()));
         historyNotice.setVisibility(history.failed() ? View.VISIBLE : View.GONE);
@@ -246,7 +264,14 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
             LinearLayout titleRow = horizontal();
             TextView title = text(e.displayName(), 15, ink, true); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
             title.setPadding(0, dp(8), dp(8), dp(8)); title.setMinHeight(dp(44)); title.setGravity(Gravity.CENTER_VERTICAL);
-            titleRow.addView(title, weight()); titleRow.addView(text("›", 24, muted, false)); card.addView(titleRow);
+            titleRow.addView(title, weight());
+            TextView rename = button(e.name.isEmpty() ? "命名" : "改名", surface, accent, 12, () -> nameHistory(e));
+            rename.setTag("history-name:" + e.id); rename.setContentDescription("命名历史记录 " + e.displayName());
+            titleRow.addView(rename, size(56, 44)); card.addView(titleRow);
+            if (!e.name.isEmpty()) {
+                TextView identity = text(e.defaultDisplayName(), 12, muted, false); identity.setMaxLines(2); identity.setEllipsize(TextUtils.TruncateAt.END);
+                identity.setPadding(0, 0, 0, dp(6)); identity.setOnClickListener(v -> restore(e)); card.addView(identity);
+            }
             TextView meta = text(format.format(new Date(e.recognizedAt)) + "  ·  " + (e.kind == AccountData.Kind.RECORD ? (e.automatic ? "账号记录" : "手动分隔") : e.typeDescription()) + "  ·  已加密", 11, muted, false);
             meta.setPadding(0, dp(2), 0, dp(12)); card.addView(meta);
             card.setOnClickListener(v -> restore(e)); title.setOnClickListener(v -> restore(e)); meta.setOnClickListener(v -> restore(e));
@@ -270,6 +295,42 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         if (automatic == auto) return;
         automatic = auto; renderMode(); invalidateResult("分隔模式已更改，请重新解析。");
     }
+
+    private void nameHistory(HistoryEntry entry) {
+        if (namingDialog != null && namingDialog.isShowing()) return;
+        LinearLayout content = vertical(); content.setPadding(dp(24), dp(8), dp(24), 0);
+        TextView identity = text(entry.defaultDisplayName(), 12, muted, false); content.addView(identity);
+        EditText name = new EditText(this); name.setId(R.id.history_name_input); name.setSingleLine(true);
+        name.setText(entry.name); name.setHint("留空可恢复默认名称"); name.setContentDescription("历史记录名称");
+        name.setFilters(new InputFilter[]{new InputFilter.LengthFilter(HistoryEntry.NAME_LIMIT)});
+        name.setSaveEnabled(false); name.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        name.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        name.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+        content.addView(name, new LinearLayout.LayoutParams(-1, dp(54)));
+        TextView hint = text("最多 40 个字符；名称与历史一起在本机加密保存。", 11, muted, false); content.addView(hint);
+        AlertDialog dialog = PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("给历史记录命名")
+                .setView(content).setNegativeButton("取消", null).setPositiveButton("保存", null));
+        namingDialog = dialog;
+        dialog.setOnDismissListener(ignored -> { if (namingDialog == dialog) namingDialog = null; });
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            final String value;
+            try { value = HistoryEntry.normalizeName(name.getText().toString()); }
+            catch (IllegalArgumentException error) { name.setError(error.getMessage()); return; }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(false); dialog.setCancelable(false);
+            history.rename(entry.id, value, success -> {
+                if (isDestroyed()) return;
+                if (success) { dialog.dismiss(); setStatus(value.isEmpty() ? "已恢复默认名称。" : "已保存记录名称。", false); }
+                else {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setEnabled(true); dialog.setCancelable(true);
+                    name.setError("名称保存失败，记录可能已被移除，请重试。");
+                }
+            });
+        });
+        name.requestFocus(); name.setSelection(name.length());
+        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+    }
     private void renderMode() {
         autoButton.setBackground(ripple(automatic ? surface : subtle, 9)); autoButton.setTextColor(automatic ? accent : muted); autoButton.setSelected(automatic);
         manualButton.setBackground(ripple(automatic ? subtle : surface, 9)); manualButton.setTextColor(automatic ? muted : accent); manualButton.setSelected(!automatic);
@@ -279,6 +340,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private void invalidateResult(String message) { editVersion++; resetResult(); setStatus(message, false); }
     private void resetResult() {
         if (data != null) { data.close(); data = null; }
+        selectedId = ""; if (replaceOtpButton != null) { replaceOtpButton.setEnabled(false); replaceOtpButton.setAlpha(.4f); }
         lastStep = -1; passwordVisible = false;
         if (account == null) return;
         account.setText("等待解析"); password.setText("等待解析"); secret.setText("等待解析"); issuer.setText("");
@@ -346,6 +408,45 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
             input.setText(value); parseInput();
         } catch (SecurityException e) { setStatus("暂时无法读取剪贴板，请手动粘贴后解析。", true); }
     }
+    private void openQr(String mode) {
+        hideKeyboard();
+        startActivityForResult(new Intent(this, QrImportActivity.class).putExtra(QrImportActivity.MODE, mode), QR_IMPORT);
+    }
+    private void promptReplacement() {
+        for (HistoryEntry entry : history.entries()) if (entry.id.equals(selectedId)) { openReplacement(new OtpReplacementEditor.Draft(entry)); return; }
+        setStatus("请先识别或打开一条已保存的历史记录。", true);
+    }
+    private void openReplacement(OtpReplacementEditor.Draft draft) {
+        if (replacementEditor != null && replacementEditor.snapshot() != null) return;
+        replacementEditor = new OtpReplacementEditor(this, draft, history, mode -> {
+            hideKeyboard(); startActivityForResult(new Intent(this, QrImportActivity.class).putExtra(QrImportActivity.MODE, mode), QR_REPLACE);
+        }, () -> {
+            for (HistoryEntry entry : history.entries()) if (entry.id.equals(draft.expected.id)) {
+                restore(entry); setStatus("2FA 已更换，账号、密码和名称已保留。", false); break;
+            }
+        });
+    }
+    @Override protected void onActivityResult(int request, int result, Intent intent) {
+        super.onActivityResult(request, result, intent);
+        if (request == QR_REPLACE) {
+            if (replacementEditor == null || intent == null) return;
+            if (result == RESULT_OK) {
+                String text = intent.getStringExtra(QrImportActivity.TEXT);
+                if (text == null || text.length() > AccountParser.MAX_INPUT) replacementEditor.error("二维码内容过长或无效。");
+                else replacementEditor.acceptQr(text);
+            } else if (intent.hasExtra(QrImportActivity.ERROR)) replacementEditor.error(intent.getStringExtra(QrImportActivity.ERROR));
+            return;
+        }
+        if (request != QR_IMPORT || intent == null) return;
+        if (result == RESULT_OK) {
+            String text = intent.getStringExtra(QrImportActivity.TEXT);
+            if (text == null || text.length() > AccountParser.MAX_INPUT) { invalidateResult("二维码内容过长或无效。"); return; }
+            automatic = true; renderMode(); input.setText(text); switchPage(false); parseInput();
+            parsePage.smoothScrollTo(0, 0);
+        } else if (intent.hasExtra(QrImportActivity.ERROR)) {
+            invalidateResult(intent.getStringExtra(QrImportActivity.ERROR));
+        }
+    }
     private void restore(HistoryEntry e) {
         editVersion++; resetResult(); suppress = true; automatic = e.automatic;
         if (e.kind == AccountData.Kind.RECORD) separator.setText(e.firstSeparator);
@@ -356,7 +457,8 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private void copy(String value, String label, TextView source) {
         try {
             ClipData clip = ClipData.newPlainText("账号验证管家", value);
-            PersistableBundle extras = new PersistableBundle(); extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
+            PersistableBundle extras = new PersistableBundle();
+            extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
             clip.getDescription().setExtras(extras);
             getSystemService(ClipboardManager.class).setPrimaryClip(clip);
             CharSequence old = (CharSequence) source.getTag(R.id.copy_all); source.setText("已复制");
@@ -365,18 +467,18 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         } catch (SecurityException e) { setStatus("复制失败，请重试。", true); }
     }
     private void confirmClearHistory() {
-        new AlertDialog.Builder(this).setTitle("清空全部历史记录？")
+        PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("清空全部历史记录？")
                 .setMessage("将删除本机保存的全部历史。当前页面的解析结果会保留。")
                 .setNegativeButton("取消", null).setPositiveButton("清空历史", (dialog, which) -> history.clear(success -> {
                     if (isDestroyed()) return;
                     if (success) { selectedId = ""; changed(); setStatus("历史记录已清空", false); }
                     else setStatus("清空失败，请重试。", true);
-                })).show();
+                })));
     }
     private void showHelp() {
-        new AlertDialog.Builder(this).setTitle("账号验证管家  " + BuildConfig.VERSION_NAME)
-                .setMessage("直接粘贴账号记录、纯 Base32 2FA 密钥或 Authenticator URI，点击“识别并生成”。\n\n账号记录沿用连续 3 个及以上符号自动分隔；复杂边界可手动指定。密码原文完整保留。\n\n纯密钥使用 SHA1 / 6 位 / 30 秒；支持大小写、分组空白和标准末尾填充。\n\n支持 otpauth://totp/ URI，识别账号和发行方，并读取 algorithm、digits、period。算法支持 SHA1/SHA256/SHA512，位数支持 6/8，周期为正整数秒。缺省值是 SHA1 / 6 位 / 30 秒。HOTP 和批量迁移 URI 暂不支持。\n\n验证码按 URI 实际参数刷新，复制时重新计算。请保持手机系统时间准确。\n\n最近 10 条记录在本机加密保存，升级保留旧历史。纯密钥和 URI 不会虚构密码；历史只显示适用的复制按钮。“复制全部”含密钥，“整组”不含密钥。\n\n全程离线；卸载会删除历史。复制内容受系统和输入法剪贴板设置影响。")
-                .setPositiveButton("知道了", null).show();
+        PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("账号验证管家  " + BuildConfig.VERSION_NAME)
+                .setMessage("可拍照或上传二维码图片识别 2FA，也可直接粘贴账号记录、纯 Base32 2FA 密钥或 Authenticator URI，点击“识别并生成”。\n\n账号记录沿用连续 3 个及以上符号自动分隔；复杂边界可手动指定。密码原文完整保留。\n\n纯密钥使用 SHA1 / 6 位 / 30 秒；支持大小写、分组空白和标准末尾填充。\n\n支持 otpauth://totp/ URI，识别账号和发行方，并读取 algorithm、digits、period。算法支持 SHA1/SHA256/SHA512，位数支持 6/8，周期为正整数秒。缺省值是 SHA1 / 6 位 / 30 秒。HOTP 和批量迁移 URI 暂不支持。\n\n验证码按 URI 实际参数刷新，复制时重新计算。请保持手机系统时间准确。\n\n最近 10 条记录在本机加密保存，升级保留旧历史。纯密钥和 URI 不会虚构密码；历史只显示适用的复制按钮。“复制全部”含密钥，“整组”不含密钥。\n\n全程离线；卸载会删除历史。复制内容受系统和输入法剪贴板设置影响。")
+                .setPositiveButton("知道了", null));
     }
     private void setStatus(String message, boolean error) {
         status.setText(message); status.setTextColor(error ? danger : accent);
@@ -396,11 +498,12 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private static String preview(String s) { String value = s.replace("\t", "\\t"); return "「" + (value.length() > 12 ? value.substring(0, 12) + "…" : value) + "」"; }
     @Override protected void onStart() { super.onStart(); history.listen(this); changed(); timer.post(tick); }
     @Override protected void onStop() { timer.removeCallbacksAndMessages(null); history.unlisten(this); passwordVisible = false; renderPassword(); super.onStop(); }
-    @Override protected void onDestroy() { if (data != null) data.close(); super.onDestroy(); }
+    @Override protected void onDestroy() { if (replacementEditor != null) replacementEditor.close(); if (data != null) data.close(); super.onDestroy(); }
     @Override protected void onSaveInstanceState(Bundle out) { out.putBoolean("history", historyVisible); super.onSaveInstanceState(out); }
     @Override public Object onRetainNonConfigurationInstance() {
         Session s = new Session(); s.input = input.getText().toString(); s.separator = separator.getText().toString(); s.auto = automatic; s.history = historyVisible; s.selected = selectedId;
         if (data != null) s.result = HistoryEntry.fromData("", data, automatic, 0);
+        if (replacementEditor != null) s.replacement = replacementEditor.retainedDraft();
         return s;
     }
 

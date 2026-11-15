@@ -5,6 +5,8 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace AccountSplit2FA
 {
@@ -13,6 +15,7 @@ namespace AccountSplit2FA
         [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
         [STAThread] private static void Main(string[] args)
         {
+            QrDependencies.Register();
             try { SetProcessDPIAware(); } catch (EntryPointNotFoundException) { }
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             string historyFile = args.Length == 2 && args[0] == "--history-file" ? args[1] : null;
@@ -42,44 +45,52 @@ namespace AccountSplit2FA
         private DateTime statusUntil;
         private readonly HistoryStore history;
         private TableLayoutPanel shell;
+        private TableLayoutPanel mainPage;
+        private Panel contentHost;
         private Card historyCard;
         private FlowLayoutPanel historyList;
         private Label historyCount;
+        private Label historyStatus;
         private ActionButton historyToggle, clearHistory;
+        private ActionButton qrUpload;
+        private ActionButton replaceOtp;
+        private long qrImportVersion;
         private Guid selectedHistory = Guid.Empty;
-        private bool historyExpanded = true;
+        private bool historyExpanded;
+        private bool codeFontPending;
+        private readonly Dictionary<int, Font> codeFonts = new Dictionary<int, Font>();
 
         public MainForm() : this(null) { }
         public MainForm(string historyFile)
         {
             history = new HistoryStore(historyFile);
-            Text = "账号验证管家 v1.5";
-            historyExpanded = SystemInformation.WorkingArea.Width >= 1240;
-            ClientSize = new Size(historyExpanded ? Math.Min(1300, SystemInformation.WorkingArea.Width - 40) : 1020, 708);
-            MinimumSize = new Size(historyExpanded ? 1230 : 950, 730);
+            Text = "账号验证管家 v1.8.0";
+            ClientSize = new Size(860, 660);
+            MinimumSize = new Size(780, 660);
             StartPosition = FormStartPosition.CenterScreen; BackColor = Theme.Background;
             Font = Theme.Font(10, FontStyle.Regular); AutoScaleMode = AutoScaleMode.Dpi; DoubleBuffered = true;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-            TableLayoutPanel root = Table(1, 5); root.Dock = DockStyle.Fill; root.Padding = new Padding(28, 18, 28, 14);
-            foreach (int height in new int[] { 76, 260, 18 }) root.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-            shell = Table(2, 1); shell.Dock = DockStyle.Fill;
-            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, historyExpanded ? 280 : 0));
-            Controls.Add(shell); shell.Controls.Add(root, 0, 0);
-            root.Controls.Add(CreateHeader(), 0, 0); root.Controls.Add(CreateInputCard(), 0, 1);
+            shell = Table(1, 2); shell.Dock = DockStyle.Fill; shell.Padding = new Padding(18, 16, 18, 12);
+            shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 72)); shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            Controls.Add(shell); shell.Controls.Add(CreateHeader(), 0, 0);
+            contentHost = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0), BackColor = Color.Transparent };
+            shell.Controls.Add(contentHost, 0, 1);
+            mainPage = Table(1, 4); mainPage.Dock = DockStyle.Fill;
+            mainPage.RowStyles.Add(new RowStyle(SizeType.Absolute, 242)); mainPage.RowStyles.Add(new RowStyle(SizeType.Absolute, 12));
+            mainPage.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); mainPage.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            mainPage.Controls.Add(CreateInputCard(), 0, 0);
             TableLayoutPanel resultLayout = Table(3, 1); resultLayout.Dock = DockStyle.Fill;
-            resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 61));
-            resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
-            resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 39));
+            resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+            resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 14));
+            resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
             resultLayout.Controls.Add(CreateResultCard(), 0, 0); resultLayout.Controls.Add(CreateCodeCard(), 2, 0);
-            root.Controls.Add(resultLayout, 0, 3); root.Controls.Add(CreateFooter(), 0, 4);
-            historyCard = CreateHistoryCard(); historyCard.Visible = historyExpanded;
-            shell.Controls.Add(historyCard, 1, 0);
+            mainPage.Controls.Add(resultLayout, 0, 2); mainPage.Controls.Add(CreateFooter(), 0, 3);
+            contentHost.Controls.Add(mainPage);
+            historyCard = CreateHistoryCard(); historyCard.Visible = false; contentHost.Controls.Add(historyCard);
             KeyPreview = true;
             KeyDown += delegate(object sender, KeyEventArgs e) {
-                if (e.Control && e.KeyCode == Keys.Enter) { ParseInput(); e.SuppressKeyPress = true; }
-                if (e.KeyCode == Keys.Escape) { ClearInput(); e.SuppressKeyPress = true; }
+                if (e.Control && e.KeyCode == Keys.Enter && !historyExpanded) { ParseInput(); e.SuppressKeyPress = true; }
+                if (e.KeyCode == Keys.Escape) { if (historyExpanded) SetHistoryPage(false); else ClearInput(); e.SuppressKeyPress = true; }
             };
             Shown += delegate { input.Focus(); };
             timer = new Timer { Interval = 200 };
@@ -154,17 +165,20 @@ namespace AccountSplit2FA
             placeholder.Font = new Font("Consolas", 11); placeholder.BackColor = Theme.Surface; placeholder.TextAlign = ContentAlignment.TopLeft;
             placeholder.Click += delegate { input.Focus(); };
             inputFrame.Controls.Add(input); inputFrame.Controls.Add(placeholder); placeholder.BringToFront(); inputFrame.Watch(input);
-            input.TextChanged += delegate { placeholder.Visible = input.TextLength == 0; if (data != null) ResetResult(); SetIdleStatus(); };
+            input.TextChanged += delegate { qrImportVersion++; placeholder.Visible = input.TextLength == 0; if (data != null) ResetResult(); SetIdleStatus(); };
             content.Controls.Add(inputFrame, 0, 2);
-            TableLayoutPanel actions = Table(3, 1); actions.Dock = DockStyle.Fill; actions.Padding = new Padding(0, 12, 0, 0);
+            TableLayoutPanel actions = Table(4, 1); actions.Dock = DockStyle.Fill; actions.Padding = new Padding(0, 12, 0, 0);
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 162)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             ActionButton parse = Button("识别并生成", ButtonKind.Primary, 150); parse.Glyph = ButtonGlyph.Arrow;
             parse.Click += delegate { ParseInput(); }; actions.Controls.Add(parse, 0, 0);
             ActionButton paste = Button("粘贴并解析", ButtonKind.Secondary, 146); paste.Glyph = ButtonGlyph.Clipboard;
             paste.Click += delegate { PasteAndParse(); }; actions.Controls.Add(paste, 1, 0);
+            qrUpload = Button("上传二维码", ButtonKind.Secondary, 134); qrUpload.AccessibleName = "上传图片识别2FA二维码";
+            qrUpload.Click += delegate { UploadQrImage(); }; actions.Controls.Add(qrUpload, 2, 0);
             ActionButton clear = Button("清空内容", ButtonKind.Ghost, 100); clear.Anchor = AnchorStyles.Right;
-            clear.Click += delegate { ClearInput(); }; actions.Controls.Add(clear, 2, 0); content.Controls.Add(actions, 0, 3);
+            clear.Click += delegate { ClearInput(); }; actions.Controls.Add(clear, 3, 0); content.Controls.Add(actions, 0, 3);
             card.Controls.Add(content); return card;
         }
         private Control CreateResultCard()
@@ -194,10 +208,16 @@ namespace AccountSplit2FA
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 18)); content.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            content.Controls.Add(Label("2FA 验证码", 12.5F, FontStyle.Bold, Color.White), 0, 0);
+            TableLayoutPanel heading = Table(2, 1); heading.Dock = DockStyle.Fill;
+            heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
+            heading.Controls.Add(Label("2FA 验证码", 12.5F, FontStyle.Bold, Color.White), 0, 0);
+            replaceOtp = Button("更换 2FA", ButtonKind.OnDark, 84); replaceOtp.Dock = DockStyle.Fill; replaceOtp.Font = Theme.Font(8, FontStyle.Regular);
+            replaceOtp.AccessibleName = "保留账号密码更换2FA"; replaceOtp.Click += delegate { PromptReplaceOtp(); };
+            heading.Controls.Add(replaceOtp, 1, 0); content.Controls.Add(heading, 0, 0);
             resultBadge = Label("解析后自动生成，每 30 秒刷新", 8.5F, FontStyle.Regular, Color.FromArgb(158, 177, 208)); content.Controls.Add(resultBadge, 0, 1);
-            codeLabel = Label("--- ---", 41, FontStyle.Bold, Color.FromArgb(121, 151, 197)); codeLabel.Font = new Font("Consolas", 41, FontStyle.Bold);
+            codeLabel = Label("--- ---", 41, FontStyle.Bold, Color.FromArgb(121, 151, 197)); codeLabel.Font = CodeFont(41);
             codeLabel.TextAlign = ContentAlignment.MiddleCenter; codeLabel.AccessibleName = "当前六位验证码，等待解析"; content.Controls.Add(codeLabel, 0, 2);
+            codeLabel.SizeChanged += delegate { ScheduleCodeFont(); }; codeLabel.TextChanged += delegate { ScheduleCodeFont(); };
             counterOptions = Table(2, 1); counterOptions.Dock = DockStyle.Fill;
             counterOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); counterOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
             countdown = Label("等待解析", 9, FontStyle.Regular, Color.FromArgb(174, 190, 216)); countdown.TextAlign = ContentAlignment.MiddleCenter; countdown.AutoEllipsis = true;
@@ -259,7 +279,7 @@ namespace AccountSplit2FA
             autoMode.Invalidate(); manualMode.Invalidate(); autoHint.Visible = automatic; manualOptions.Visible = !automatic;
             if (!automatic) { manualOptions.BringToFront(); manualSeparator.Focus(); } SeparatorOptionsChanged();
         }
-        private void SeparatorOptionsChanged() { if (status == null || account == null) return; ResetResult(); SetStatus("分隔符设置已更改，请重新解析。", false); }
+        private void SeparatorOptionsChanged() { if (status == null || account == null) return; qrImportVersion++; ResetResult(); SetStatus("分隔符设置已更改，请重新解析。", false); }
         private void PasteAndParse()
         {
             try {
@@ -268,8 +288,55 @@ namespace AccountSplit2FA
                 input.Text = text; ParseInput();
             } catch (ExternalException) { SetStatus("暂时无法读取剪贴板，请稍后重试。", true); }
         }
+        private void UploadQrImage()
+        {
+            using (OpenFileDialog picker = new OpenFileDialog { Title = "选择含有 2FA 二维码的图片",
+                Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|所有文件|*.*", CheckFileExists = true })
+            {
+                if (picker.ShowDialog(this) != DialogResult.OK) return;
+                ResetResult(); long version = ++qrImportVersion; qrUpload.Enabled = false;
+                SetStatus("正在识别图片中的 2FA 二维码…", false);
+                string path = picker.FileName;
+                Task.Factory.StartNew(() => QrImageReader.ReadFile(path)).ContinueWith(task => {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    try { BeginInvoke((Action)delegate {
+                        qrUpload.Enabled = true;
+                        if (version != qrImportVersion) return;
+                        if (task.IsFaulted) {
+                            Exception error = task.Exception.GetBaseException();
+                            SetStatus(error is FormatException ? error.Message : "无法读取图片，请选择有效的 PNG、JPEG 或其他常见图片。", true);
+                            return;
+                        }
+                        IList<string> choices = task.Result;
+                        string chosen = choices.Count == 1 ? choices[0] : ChooseQr(choices);
+                        if (chosen != null) ImportQrText(chosen);
+                        else SetStatus("已取消二维码选择。", false);
+                    }); } catch (InvalidOperationException) { }
+                }, TaskScheduler.Default);
+            }
+        }
+        private string ChooseQr(IList<string> choices)
+        {
+            using (Form dialog = new Form { Text = "选择要导入的 2FA 二维码", FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(460, 150), MaximizeBox = false, MinimizeBox = false, Font = Font })
+            {
+                Label caption = new Label { Text = "图片中有多个 2FA 二维码，请选择一条：", AutoSize = true, Location = new Point(20, 18) };
+                ComboBox list = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(20, 48), Width = 420 };
+                for (int i = 0; i < choices.Count; i++) list.Items.Add((i + 1) + ". " + QrImageReader.Describe(choices[i]));
+                list.SelectedIndex = 0;
+                System.Windows.Forms.Button accept = new System.Windows.Forms.Button { Text = "识别并生成", DialogResult = DialogResult.OK, Location = new Point(220, 100), Width = 110 };
+                System.Windows.Forms.Button cancel = new System.Windows.Forms.Button { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(340, 100), Width = 100 };
+                dialog.Controls.AddRange(new Control[] { caption, list, accept, cancel }); dialog.AcceptButton = accept; dialog.CancelButton = cancel;
+                return dialog.ShowDialog(this) == DialogResult.OK ? choices[list.SelectedIndex] : null;
+            }
+        }
+        private void ImportQrText(string text)
+        {
+            SetSeparatorMode(true); input.Text = text; ParseInput();
+        }
         private void ParseInput()
         {
+            qrImportVersion++;
             placeholder.Visible = input.TextLength == 0;
             ResetResult();
             selectedHistory = Guid.Empty;
@@ -279,7 +346,7 @@ namespace AccountSplit2FA
                 string kind = data.InputKind == InputKind.Secret ? "纯 2FA 密钥" : data.InputKind == InputKind.AuthenticatorUri ? "Authenticator URI" : data.UsesUri ? "账号记录 + Authenticator URI" : "账号记录";
                 SetStatus("已识别 " + kind + (data.InputKind == InputKind.Record ? " · 分隔符 " + SeparatorPreview(data.FirstSeparator) + (data.FirstSeparator == data.LastSeparator ? "" : " / " + SeparatorPreview(data.LastSeparator)) : ""), false);
                 try {
-                    history.Record(data, automatic); selectedHistory = history.Entries[0].Id; RefreshHistory();
+                    history.Record(data, automatic); selectedHistory = history.Entries[0].Id; replaceOtp.Enabled = true; RefreshHistory();
                     nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
                 } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("解析成功，但历史记录保存失败；请检查本机历史文件。", true); }
             } catch (FormatException error) { SetStatus(error.Message, true); }
@@ -290,8 +357,9 @@ namespace AccountSplit2FA
             accountCopy.Enabled = enabled && data != null && data.Account.Length > 0;
             passwordCopy.Enabled = enabled && data != null && data.Password.Length > 0;
             secretCopy.Enabled = codeCopy.Enabled = allCopy.Enabled = enabled;
+            replaceOtp.Enabled = enabled && selectedHistory != Guid.Empty;
         }
-        private void ClearInput() { input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
+        private void ClearInput() { qrImportVersion++; input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
         private void ResetResult()
         {
             if (data != null) { data.Dispose(); data = null; } lastStep = -1;
@@ -316,8 +384,46 @@ namespace AccountSplit2FA
             try { Clipboard.SetText(value, TextDataFormat.UnicodeText); button.ShowCopied(); SetStatus(label + "已复制", false); }
             catch (ExternalException) { SetStatus("剪贴板正被其他程序占用，请重新点击复制。", true); }
         }
-        private void SetIdleStatus() { status.Text = "●  本地离线运行 · 最近 10 条记录加密保存"; status.ForeColor = Theme.Muted; transientStatus = false; }
-        private void SetStatus(string text, bool error) { status.Text = text; status.ForeColor = error ? Color.FromArgb(197, 64, 77) : Color.FromArgb(32, 137, 105); transientStatus = !error; statusUntil = DateTime.UtcNow.AddSeconds(7); }
+        private void SetIdleStatus() {
+            status.Text = "●  本地离线运行 · 最近 10 条记录加密保存"; status.ForeColor = Theme.Muted; transientStatus = false;
+            if (historyStatus != null) { historyStatus.Text = "名称与记录在本机加密保存"; historyStatus.ForeColor = Theme.Muted; }
+        }
+        private void SetStatus(string text, bool error) {
+            status.Text = text; status.ForeColor = error ? Color.FromArgb(197, 64, 77) : Color.FromArgb(32, 137, 105);
+            if (historyStatus != null) { historyStatus.Text = text; historyStatus.ForeColor = status.ForeColor; }
+            transientStatus = !error; statusUntil = DateTime.UtcNow.AddSeconds(7);
+        }
+        private Font CodeFont(int size)
+        {
+            Font font;
+            if (!codeFonts.TryGetValue(size, out font)) { font = new Font("Consolas", size, FontStyle.Bold); codeFonts.Add(size, font); }
+            return font;
+        }
+        private void ScheduleCodeFont()
+        {
+            if (codeFontPending || !IsHandleCreated || IsDisposed) return;
+            codeFontPending = true;
+            BeginInvoke((MethodInvoker)delegate { codeFontPending = false; if (!IsDisposed) FitCodeFont(); });
+        }
+        private void FitCodeFont()
+        {
+            if (codeLabel == null || codeLabel.ClientSize.Width < 1 || codeLabel.ClientSize.Height < 1) return;
+            float size = data != null && data.Digits == 8 ? 34 : 41;
+            while (size > 20) {
+                using (Font candidate = new Font("Consolas", size, FontStyle.Bold)) {
+                    Size measured = TextRenderer.MeasureText(codeLabel.Text, candidate, new Size(Int32.MaxValue, Int32.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+                    if (measured.Width <= codeLabel.ClientSize.Width - 8 && measured.Height <= codeLabel.ClientSize.Height - 2) break;
+                }
+                size--;
+            }
+            if (Math.Abs(codeLabel.Font.Size - size) > .1F) codeLabel.Font = CodeFont((int)size);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing) { foreach (Font font in codeFonts.Values) font.Dispose(); codeFonts.Clear(); }
+        }
 
         private void ShowResult()
         {
@@ -328,28 +434,29 @@ namespace AccountSplit2FA
             password.UseSystemPasswordChar = hidePassword.Checked && data.Password.Length > 0;
             resultBadge.Text = (data.Issuer.Length > 0 ? data.Issuer + " · " : "") + data.Algorithm + " · " + data.Digits + " 位 · " + (data.OtpKind == OtpKind.Hotp ? "HOTP" : data.Period + " 秒");
             resultBadge.AutoEllipsis = true;
-            float fontSize = data.Digits == 8 ? 34 : 41;
-            if (codeLabel.Font.Size != fontSize) { Font old = codeLabel.Font; codeLabel.Font = new Font("Consolas", fontSize, FontStyle.Bold); old.Dispose(); }
             bool hotp = data.OtpKind == OtpKind.Hotp; nextCode.Visible = hotp;
             nextCode.Enabled = false; counterOptions.ColumnStyles[1].Width = hotp ? 92 : 0; progress.Visible = !hotp;
-            SetCopyEnabled(true); lastStep = -1; UpdateCode();
+            SetCopyEnabled(true); lastStep = -1; UpdateCode(); ScheduleCodeFont();
         }
 
         private Card CreateHistoryCard()
         {
-            Card card = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 18, 20, 52), Padding = new Padding(14, 14, 14, 12) };
-            TableLayoutPanel layout = Table(1, 4); layout.Dock = DockStyle.Fill;
+            Card card = new Card { Dock = DockStyle.Fill, Margin = new Padding(0), Padding = new Padding(16) };
+            TableLayoutPanel layout = Table(1, 5); layout.Dock = DockStyle.Fill;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             layout.Controls.Add(Label("最近识别", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
             historyCount = Label("0 / 10 条 · 点击记录恢复", 8.5F, FontStyle.Regular, Theme.Muted);
             layout.Controls.Add(historyCount, 0, 1);
-            historyList = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = false,
-                FlowDirection = FlowDirection.TopDown, BackColor = Color.White, Margin = new Padding(0) };
+            historyList = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true,
+                FlowDirection = FlowDirection.LeftToRight, BackColor = Color.White, Margin = new Padding(0) };
             historyList.SizeChanged += delegate { ResizeHistoryItems(); };
             layout.Controls.Add(historyList, 0, 2);
+            historyStatus = Label("名称与记录在本机加密保存", 8.5F, FontStyle.Regular, Theme.Muted); historyStatus.AutoEllipsis = true;
+            layout.Controls.Add(historyStatus, 0, 3);
             clearHistory = Button("清空历史记录", ButtonKind.Ghost, 180); clearHistory.Dock = DockStyle.Fill;
             clearHistory.Click += delegate {
                 if (MessageBox.Show(this, "清空所有历史记录？当前窗口中的识别结果会保留。", "账号验证管家",
@@ -357,23 +464,25 @@ namespace AccountSplit2FA
                 try { history.Clear(); selectedHistory = Guid.Empty; RefreshHistory(); SetStatus("历史记录已清空", false); }
                 catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法清空历史记录，请检查文件是否可写。", true); }
             };
-            layout.Controls.Add(clearHistory, 0, 3); card.Controls.Add(layout); return card;
+            layout.Controls.Add(clearHistory, 0, 4); card.Controls.Add(layout); return card;
         }
 
         private void ToggleHistory()
         {
-            historyExpanded = !historyExpanded;
+            SetHistoryPage(!historyExpanded);
             if (historyExpanded) {
-                int expandedWidth = Width + 280;
-                MinimumSize = new Size(1230, 730);
-                if (WindowState == FormWindowState.Normal) Width = Math.Max(1230, expandedWidth);
-                shell.ColumnStyles[1].Width = 280; historyCard.Visible = true;
                 try { history.Load(); RefreshHistory(); }
                 catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史记录读取失败，原文件已保留。", true); }
-            } else {
-                historyCard.Visible = false; shell.ColumnStyles[1].Width = 0; MinimumSize = new Size(950, 730);
-                if (WindowState == FormWindowState.Normal) Width = Math.Max(950, Width - 280);
             }
+        }
+
+        private void SetHistoryPage(bool visible)
+        {
+            historyExpanded = visible; mainPage.Visible = !visible; historyCard.Visible = visible;
+            if (visible) { historyCard.BringToFront(); contentHost.PerformLayout(); ResizeHistoryItems(); }
+            else { mainPage.BringToFront(); input.Focus(); ScheduleCodeFont(); }
+            historyToggle.Text = visible ? "返回解析" : "历史记录 " + history.Entries.Count + "/10";
+            historyToggle.AccessibleName = visible ? "返回解析页" : "查看历史记录";
         }
 
         private void RefreshHistory()
@@ -381,7 +490,8 @@ namespace AccountSplit2FA
             historyList.SuspendLayout();
             while (historyList.Controls.Count > 0) { Control old = historyList.Controls[0]; historyList.Controls.RemoveAt(0); old.Dispose(); }
             historyCount.Text = history.Entries.Count + " / 10 条 · 点击记录恢复";
-            historyToggle.Text = "历史记录 " + history.Entries.Count + "/10";
+            historyToggle.Text = historyExpanded ? "返回解析" : "历史记录 " + history.Entries.Count + "/10";
+            historyToggle.AccessibleName = historyExpanded ? "返回解析页" : "查看历史记录";
             clearHistory.Enabled = history.Entries.Count > 0 || File.Exists(history.FilePath);
             if (history.Entries.Count == 0) {
                 Label empty = Label("暂无历史记录\r\n\r\n成功识别后自动保存\r\n重启后仍可查看", 9, FontStyle.Regular, Theme.Muted);
@@ -395,23 +505,42 @@ namespace AccountSplit2FA
         private void ResizeHistoryItems()
         {
             if (historyList == null) return;
-            int width = Math.Max(180, historyList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2);
-            foreach (Control item in historyList.Controls) item.Width = width;
+            int available = Math.Max(180, historyList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2);
+            int columns = available >= 660 ? 2 : 1;
+            for (int i = 0; i < historyList.Controls.Count; i++) {
+                Control item = historyList.Controls[i];
+                bool empty = item is Label;
+                item.Width = empty ? available : (available - (columns - 1) * 8) / columns;
+                item.Margin = new Padding(0, 0, !empty && columns == 2 && i % 2 == 0 ? 8 : 0, 8);
+            }
         }
 
         private Control CreateHistoryItem(HistoryEntry entry)
         {
-            Card card = new Card { Height = 104, Padding = new Padding(6), Margin = new Padding(0, 0, 0, 8), Radius = 9,
+            bool named = entry.Name.Length > 0;
+            Card card = new Card { Height = named ? 126 : 104, Padding = new Padding(6), Margin = new Padding(0, 0, 0, 8), Radius = 9,
                 BorderColor = entry.Id == selectedHistory ? Color.FromArgb(139, 168, 250) : Theme.Line };
-            TableLayoutPanel content = Table(1, 3); content.Dock = DockStyle.Fill;
+            card.Tag = entry.Id;
+            TableLayoutPanel content = Table(1, named ? 4 : 3); content.Dock = DockStyle.Fill;
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            if (named) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            TableLayoutPanel heading = Table(2, 1); heading.Dock = DockStyle.Fill;
+            heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
             ActionButton open = Button(entry.DisplayName, ButtonKind.Ghost, 200); open.Dock = DockStyle.Fill; open.AlignLeft = true;
             open.Font = Theme.Font(9, FontStyle.Bold); open.AccessibleName = "打开历史记录 " + entry.DisplayName;
-            open.Click += delegate { RestoreHistory(entry); }; content.Controls.Add(open, 0, 0);
+            open.Click += delegate { RestoreHistory(entry); }; heading.Controls.Add(open, 0, 0);
+            ActionButton rename = Button(named ? "改名" : "命名", ButtonKind.Ghost, 44); rename.Dock = DockStyle.Fill;
+            rename.Font = Theme.Font(8, FontStyle.Regular); rename.AccessibleName = "命名历史记录 " + entry.DisplayName;
+            rename.Click += delegate { PromptHistoryName(entry.Id); }; heading.Controls.Add(rename, 1, 0); content.Controls.Add(heading, 0, 0);
+            int row = 1;
+            if (named) {
+                Label identity = Label(entry.DefaultDisplayName, 8, FontStyle.Regular, Theme.Muted); identity.AutoEllipsis = true;
+                identity.Padding = new Padding(8, 0, 0, 0); identity.Click += delegate { RestoreHistory(entry); }; content.Controls.Add(identity, 0, row++);
+            }
             Label time = Label(entry.RecognizedAtUtc.ToLocalTime().ToString("MM-dd HH:mm") + "  ·  已加密保存", 8, FontStyle.Regular, Theme.Muted);
-            time.Padding = new Padding(8, 0, 0, 0); time.Click += delegate { RestoreHistory(entry); }; content.Controls.Add(time, 0, 1);
+            time.Padding = new Padding(8, 0, 0, 0); time.Click += delegate { RestoreHistory(entry); }; content.Controls.Add(time, 0, row++);
             TableLayoutPanel actions = Table(4, 1); actions.Dock = DockStyle.Fill;
             for (int i = 0; i < 4; i++) actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
             string[] captions = { "账号", "密码", "验证码", "整组" };
@@ -423,21 +552,50 @@ namespace AccountSplit2FA
                 copy.Click += delegate { CopyHistory(entry.Id, kind, captions[kind], copy); };
                 actions.Controls.Add(copy, i, 0);
             }
-            content.Controls.Add(actions, 0, 2); card.Click += delegate { RestoreHistory(entry); };
+            content.Controls.Add(actions, 0, row); card.Click += delegate { RestoreHistory(entry); };
             card.Controls.Add(content); return card;
+        }
+
+        private void PromptReplaceOtp()
+        {
+            try {
+                HistoryEntry entry = history.Find(selectedHistory);
+                if (entry == null) { SetStatus("请先识别或打开一条已保存的历史记录。", true); return; }
+                using (OtpReplaceDialog dialog = new OtpReplaceDialog(entry, delegate(string text) {
+                    HistoryEntry updated = history.ReplaceOtp(entry, text); RestoreHistory(updated);
+                    SetStatus("2FA 已更换，账号、密码和名称已保留。", false);
+                })) dialog.ShowDialog(this);
+            } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史记录无法读取，原文件已保留。", true); }
+        }
+
+        private void PromptHistoryName(Guid id)
+        {
+            try {
+                HistoryEntry entry = history.Find(id);
+                if (entry == null) { SetStatus("记录已被移除，请刷新历史后重试。", true); return; }
+                using (HistoryNameDialog dialog = new HistoryNameDialog(entry.DefaultDisplayName, entry.Name, delegate(string value) { RenameHistory(id, value); }))
+                    dialog.ShowDialog(this);
+            } catch (Exception e) { if (!HistoryFailure(e)) throw; SetStatus("无法读取历史记录，原文件已保留。", true); }
+        }
+
+        private void RenameHistory(Guid id, string name)
+        {
+            HistoryEntry renamed = history.Rename(id, name); RefreshHistory();
+            SetStatus(renamed.Name.Length > 0 ? "已保存记录名称。" : "已恢复默认名称。", false);
         }
 
         private void RestoreHistory(HistoryEntry entry)
         {
+            if (historyExpanded) SetHistoryPage(false);
             ResetResult(); SetSeparatorMode(entry.Automatic);
             if (!entry.Automatic) manualSeparator.Text = entry.FirstSeparator;
             input.Text = entry.OriginalText(); placeholder.Visible = false;
-            data = entry.Open(); ShowResult(); selectedHistory = entry.Id; RefreshHistory();
+            data = entry.Open(); selectedHistory = entry.Id; ShowResult(); RefreshHistory();
             nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
             SetStatus("已恢复历史记录，可复制账号、密码和当前验证码。", false);
         }
 
-        private static bool HistoryFailure(Exception error)
+        internal static bool HistoryFailure(Exception error)
         {
             return error is IOException || error is UnauthorizedAccessException || error is CryptographicException ||
                 error is FormatException || error is System.Security.SecurityException;
@@ -470,6 +628,98 @@ namespace AccountSplit2FA
             }
             catch (InvalidOperationException error) { SetStatus(error.Message, true); }
             catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取历史记录，请稍后重试。", true); }
+        }
+    }
+    internal sealed class HistoryNameDialog : Form
+    {
+        private readonly TextBox nameInput;
+        private readonly Label characterCount, feedback, placeholder;
+        private readonly ActionButton save, cancel;
+        private readonly Action<string> saveName;
+
+        public HistoryNameDialog(string identity, string currentName, Action<string> saveName)
+        {
+            this.saveName = saveName;
+            Text = "历史记录命名"; FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false;
+            MaximizeBox = false; MinimizeBox = false; BackColor = Theme.Background;
+            Font = Theme.Font(10, FontStyle.Regular); AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(460, 334); Padding = new Padding(24, 22, 24, 22); DoubleBuffered = true;
+
+            TableLayoutPanel layout = Grid(1, 10); layout.Dock = DockStyle.Fill;
+            foreach (int height in new int[] { 32, 24, 12, 54, 12, 26, 44, 34, 12, 40 }) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            layout.Controls.Add(Caption(currentName.Length > 0 ? "修改记录名称" : "给记录命名", 18, FontStyle.Bold, Theme.Ink), 0, 0);
+            layout.Controls.Add(Caption("方便在历史记录中快速找到它。", 9, FontStyle.Regular, Theme.Muted), 0, 1);
+
+            Card record = new Card { Dock = DockStyle.Fill, Radius = 10, Padding = new Padding(12, 7, 12, 7) };
+            TableLayoutPanel recordText = Grid(1, 2); recordText.Dock = DockStyle.Fill;
+            recordText.RowStyles.Add(new RowStyle(SizeType.Absolute, 17)); recordText.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            recordText.Controls.Add(Caption("当前记录", 8, FontStyle.Regular, Theme.Muted), 0, 0);
+            Label recordIdentity = Caption(identity, 10, FontStyle.Bold, Theme.Ink); recordIdentity.AutoEllipsis = true;
+            recordText.Controls.Add(recordIdentity, 0, 1); record.Controls.Add(recordText); layout.Controls.Add(record, 0, 3);
+
+            TableLayoutPanel fieldTitle = Grid(2, 1); fieldTitle.Dock = DockStyle.Fill;
+            fieldTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); fieldTitle.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72));
+            fieldTitle.Controls.Add(Caption("记录名称", 9, FontStyle.Bold, Theme.Ink), 0, 0);
+            characterCount = Caption("", 8.5F, FontStyle.Regular, Theme.Muted); characterCount.TextAlign = ContentAlignment.MiddleRight;
+            fieldTitle.Controls.Add(characterCount, 1, 0); layout.Controls.Add(fieldTitle, 0, 5);
+
+            InputFrame field = new InputFrame { Dock = DockStyle.Fill, FillColor = Color.White, Padding = new Padding(12, 10, 12, 9) };
+            nameInput = new TextBox { Text = currentName, MaxLength = HistoryEntry.MaxNameLength, BorderStyle = BorderStyle.None,
+                Dock = DockStyle.Fill, Font = Theme.Font(11, FontStyle.Regular), ForeColor = Theme.Ink, BackColor = Color.White,
+                AccessibleName = "历史记录名称", TabIndex = 0 };
+            placeholder = Caption("例如：工作邮箱、常用账号", 10, FontStyle.Regular, Theme.Muted); placeholder.BackColor = Color.White;
+            placeholder.Click += delegate { nameInput.Focus(); };
+            field.Controls.Add(nameInput); field.Controls.Add(placeholder); placeholder.BringToFront(); field.Watch(nameInput);
+            layout.Controls.Add(field, 0, 6);
+            feedback = Caption("", 8.5F, FontStyle.Regular, Theme.Muted); feedback.AutoEllipsis = true; layout.Controls.Add(feedback, 0, 7);
+
+            TableLayoutPanel actions = Grid(4, 1); actions.Dock = DockStyle.Fill;
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 10)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+            actions.Controls.Add(Caption("Enter 保存 · Esc 取消", 8, FontStyle.Regular, Theme.Muted), 0, 0);
+            cancel = new ActionButton { Text = "取消", Kind = ButtonKind.Secondary, Font = Font, Dock = DockStyle.Fill, Margin = new Padding(0), AccessibleName = "取消命名", TabIndex = 1 };
+            save = new ActionButton { Kind = ButtonKind.Primary, Font = Theme.Font(10, FontStyle.Bold), Dock = DockStyle.Fill, Margin = new Padding(0), AccessibleName = "保存记录名称", TabIndex = 2 };
+            cancel.Click += delegate { CancelEdit(); }; save.Click += delegate { SaveEdit(); };
+            actions.Controls.Add(cancel, 1, 0); actions.Controls.Add(save, 3, 0); layout.Controls.Add(actions, 0, 9); Controls.Add(layout);
+            nameInput.TextChanged += delegate { UpdateHint(); }; UpdateHint();
+            Shown += delegate { nameInput.Focus(); nameInput.SelectAll(); };
+        }
+
+        private void UpdateHint()
+        {
+            characterCount.Text = nameInput.TextLength + " / " + HistoryEntry.MaxNameLength;
+            characterCount.ForeColor = nameInput.TextLength == HistoryEntry.MaxNameLength ? Theme.Blue : Theme.Muted;
+            placeholder.Visible = nameInput.TextLength == 0;
+            feedback.Text = "留空保存可恢复默认名称。"; feedback.ForeColor = Theme.Muted;
+            save.Text = nameInput.Text.Trim().Length == 0 ? "恢复默认" : "保存名称";
+        }
+        private void SaveEdit()
+        {
+            try { string value = HistoryEntry.NormalizeName(nameInput.Text); saveName(value); DialogResult = DialogResult.OK; Close(); }
+            catch (FormatException error) { ShowError(error.Message); }
+            catch (InvalidOperationException error) { ShowError(error.Message); }
+            catch (Exception error) { if (!MainForm.HistoryFailure(error)) throw; ShowError("名称保存失败，原历史文件已保留。请重试。"); }
+        }
+        private void ShowError(string message) { feedback.Text = message; feedback.ForeColor = Color.FromArgb(197, 64, 77); nameInput.Focus(); }
+        private void CancelEdit() { DialogResult = DialogResult.Cancel; Close(); }
+        protected override bool ProcessDialogKey(Keys keyData)
+        {
+            if (keyData == Keys.Escape) { CancelEdit(); return true; }
+            if (keyData == Keys.Enter) { if (cancel.ContainsFocus) CancelEdit(); else SaveEdit(); return true; }
+            return base.ProcessDialogKey(keyData);
+        }
+        private static TableLayoutPanel Grid(int columns, int rows)
+        {
+            TableLayoutPanel result = new TableLayoutPanel { ColumnCount = columns, RowCount = rows, BackColor = Color.Transparent, Margin = new Padding(0) };
+            if (columns == 1) result.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            if (rows == 1) result.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            return result;
+        }
+        private static Label Caption(string text, float size, FontStyle style, Color color)
+        {
+            return new Label { Text = text, Font = Theme.Font(size, style), ForeColor = color, Dock = DockStyle.Fill, Margin = new Padding(0),
+                TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, UseMnemonic = false };
         }
     }
     internal static class Shapes

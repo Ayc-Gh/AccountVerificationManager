@@ -9,6 +9,14 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+        <provider
+            android:name=".qr.QrPhotoProvider"
+            android:authorities="${applicationId}.qr-photos"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/qr_photo_paths" />
+        </provider>
+        <activity android:name=".qr.QrImportActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true"
             android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
             <intent-filter>

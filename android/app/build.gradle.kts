@@ -13,8 +13,8 @@ android {
         applicationId = "cn.local.accountmanager"
         minSdk = 26
         targetSdk = 37
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 10800
+        versionName = "1.8.0"
         testInstrumentationRunner = "cn.local.accountmanager.AcceptanceInstrumentation"
     }
     if (!signing.isEmpty) {
@@ -44,7 +44,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
-dependencies { testImplementation("junit:junit:4.13.2") }
+dependencies {
+    implementation("com.google.zxing:core:3.5.4")
+    implementation("androidx.core:core:1.17.0")
+    testImplementation("junit:junit:4.13.2")
+}
 
 // The Windows Java launcher reads Gradle's @argfile in the native encoding. Stage
 // non-ASCII runtime paths to the system temp directory so Chinese checkouts work.

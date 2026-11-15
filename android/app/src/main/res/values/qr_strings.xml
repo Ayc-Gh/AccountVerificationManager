@@ -1,0 +1,7 @@
+<resources>
+    <string name="qr_import_opening">正在打开图片…</string>
+    <string name="qr_import_cancel">取消</string>
+    <string name="qr_import_photo_hint">请拍摄清晰的 2FA 二维码，完成后确认照片。</string>
+    <string name="qr_import_upload_hint">请选择含有 2FA 二维码的图片。</string>
+    <string name="qr_import_decoding">正在识别图片中的 2FA 二维码…</string>
+</resources>

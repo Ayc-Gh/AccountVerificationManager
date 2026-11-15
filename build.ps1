@@ -37,6 +37,12 @@ $writer.Write([uint32]$pngData.Length); $writer.Write([uint32]22); $writer.Write
 $writer.Dispose(); $pngStream.Dispose(); $pen.Dispose(); $graphics.Dispose(); $bitmap.Dispose()
 
 $corePath = Join-Path $projectDir 'Core.cs'
+$qrPath = Join-Path $projectDir 'QrImport.cs'
+$zxingPath = Join-Path $projectDir 'third_party\zxing\zxing.dll'
+if ((Get-FileHash -LiteralPath $zxingPath -Algorithm SHA256).Hash -ne '643A5A3DB0AE02998B507BEB82DBC362A2D5593B429963DB17EB78089AABB95A') {
+    throw 'The pinned ZXing.Net dependency checksum does not match.'
+}
+$qrReferences = @("/r:$zxingPath", "/resource:$zxingPath,AccountVerificationManager.zxing.dll", '/r:System.Drawing.dll')
 $testExe = Join-Path $checksDir 'Tests.exe'
 & $compilerPath /nologo /target:exe /optimize+ "/out:$testExe" $corePath (Join-Path $projectDir 'Tests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed.' }
@@ -49,6 +55,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Smart recognition test compilation failed.' }
 & $smartTestExe
 if ($LASTEXITCODE -ne 0) { throw 'Smart recognition verification failed.' }
 
+$qrTestExe = Join-Path $checksDir 'QrTests.exe'
+& $compilerPath /nologo /target:exe /optimize+ @qrReferences "/out:$qrTestExe" $corePath $qrPath (Join-Path $projectDir 'QrTests.cs')
+if ($LASTEXITCODE -ne 0) { throw 'QR test compilation failed.' }
+& $qrTestExe
+if ($LASTEXITCODE -ne 0) { throw 'QR verification failed.' }
+
 $historyPath = Join-Path $projectDir 'History.cs'
 $historyTestExe = Join-Path $checksDir 'HistoryTests.exe'
 & $compilerPath /nologo /target:exe /optimize+ /r:System.Security.dll "/out:$historyTestExe" $corePath $historyPath (Join-Path $projectDir 'HistoryTests.cs')
@@ -57,12 +69,15 @@ if ($LASTEXITCODE -ne 0) { throw 'History test compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'History verification failed.' }
 
 $appExe = Join-Path $releaseDir '账号验证管家.exe'
-& $compilerPath /nologo /target:winexe /platform:anycpu /optimize+ /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Security.dll "/win32manifest:$(Join-Path $projectDir 'app.manifest')" "/win32icon:$iconPath" "/out:$appExe" $corePath $historyPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'AssemblyInfo.cs')
+$otpDialogPath = Join-Path $projectDir 'OtpReplaceDialog.cs'
+& $compilerPath /nologo /target:winexe /platform:anycpu /optimize+ /r:System.Windows.Forms.dll /r:System.Security.dll @qrReferences "/win32manifest:$(Join-Path $projectDir 'app.manifest')" "/win32icon:$iconPath" "/out:$appExe" $corePath $historyPath $qrPath $otpDialogPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'AssemblyInfo.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Application compilation failed.' }
 $uiCheckExe = Join-Path $checksDir 'UiChecks.exe'
-& $compilerPath /nologo /target:exe /main:UiChecks /optimize+ /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Security.dll "/out:$uiCheckExe" $corePath $historyPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'UiChecks.cs')
+& $compilerPath /nologo /target:exe /main:UiChecks /optimize+ /r:System.Windows.Forms.dll /r:System.Security.dll @qrReferences "/out:$uiCheckExe" $corePath $historyPath $qrPath $otpDialogPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'UiChecks.cs')
 if ($LASTEXITCODE -ne 0) { throw 'UI integration test compilation failed.' }
 & $uiCheckExe
 if ($LASTEXITCODE -ne 0) { throw 'UI integration verification failed.' }
 Copy-Item -LiteralPath (Join-Path $projectDir '使用说明.txt') -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $projectDir 'THIRD_PARTY_NOTICES.txt') -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $projectDir 'third_party\zxing\LICENSE.txt') -Destination (Join-Path $releaseDir 'ZXing-LICENSE.txt') -Force
 Write-Output "Built: $appExe"

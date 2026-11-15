@@ -1,10 +1,28 @@
 # 账号验证管家 Android
 
-账号验证管家的 Android 原生应用。v1.1.0 提供智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
+账号验证管家的 Android 原生应用。v1.8.0 提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
 
-[下载 Android v1.1.0](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.1.0) · [Windows 版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.4.0)
+[Android v1.8.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.8.0/AccountVerificationManager-android-v1.8.0.apk) · [Windows v1.8.0](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.8.0/AccountVerificationManager-v1.8.0-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
 
-支持 Android 8.0 及以上，无网络权限，无第三方运行时依赖。界面支持系统深色模式。
+支持 Android 8.0 及以上，无网络权限，二维码解码使用内置 ZXing，拍照文件使用 AndroidX FileProvider。界面支持系统深色模式。
+
+## 更换 2FA
+
+先识别或从历史恢复目标账号，点击验证码卡片右上角“更换 2FA”。可复制旧验证码，粘贴新密钥或导入二维码，预览并复制新验证码；确认服务端换绑完成后点击“保存替换”。Windows 支持上传图片，Android 支持拍照和上传。
+
+更换保留原记录的账号、密码、名称、排序和时间。纯密钥沿用当前 TOTP 参数，URI 使用新参数且不覆盖当前账号。取消、无效输入或保存失败保留原记录；其他窗口已更新的记录会拒绝覆盖。
+
+带自定义参数的账号记录会以末项 URI 保留参数，重新识别不会退回默认值。新版更换后的记录请继续使用 1.8.0 或后续版本。
+
+## 二维码导入
+
+点击“拍照识别二维码”调用系统相机，确认照片后识别；点击“上传二维码图片”从系统文件选择器选择图片。图像在本机解码，支持纯密钥与标准 TOTP URI，保留算法、位数和周期。同图多个有效二维码可选择一条。取消不会改动当前结果，失败会使旧复制按钮失效。已恢复防截图、录屏及最近任务预览保护，复制内容使用敏感标记隐藏系统预览。
+
+两端当前版本统一为 1.8.0；Android versionCode 为 10800。发行标签为 `android-v1.8.0`。本轮新增便捷更换 2FA，保留账号、密码和历史名称。
+
+## 历史命名
+
+在历史记录右侧点击“命名 / 改名”，输入最多 40 个字符并保存。留空恢复默认显示，取消不保存；同一条记录再次识别时保留名称，名称随历史在本机加密保存。
 
 ## 功能
 
@@ -43,7 +61,7 @@ Windows PowerShell 7、JDK 21、Android SDK platform 37 和 build-tools 37.0.0�
 .\build.ps1 -Offline
 ```
 
-脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前为 `release/账号验证管家-v1.1.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
+脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前为 `release/账号验证管家-v1.8.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
 
 ## 真实设备测试
 
@@ -61,10 +79,10 @@ adb shell am instrument -w cn.local.accountmanager.qa.test/cn.local.accountmanag
 
 ## 结构
 
-`core/SmartParser` 区分三种输入，`AuthenticatorUri` 解析和生成 URI，`AccountParser` 保留原账号分隔规则，`OtpParameters` 和 `Totp` 处理实际验证码参数。`HistoryCodec` 写入 v2 数据并兼容读取 v1；加密文件封装、Keystore 别名和密钥保持兼容。`storage/` 串行异步读写，`MainActivity` 提供原生视图与生命周期处理。修改屏幕方向时仅在内存保留当前结果，进程退出后从历史手动恢复；不将凭据写入 Activity Bundle。
+`core/SmartParser` 区分三种输入，`AuthenticatorUri` 解析和生成 URI，`AccountParser` 保留原账号分隔规则，`OtpParameters` 和 `Totp` 处理实际验证码参数。`HistoryCodec` 写入 v3 数据并兼容读取 v1/v2；加密文件封装、Keystore 别名和密钥保持兼容。`storage/` 串行异步读写，`MainActivity` 提供原生视图与生命周期处理。修改屏幕方向时仅在内存保留当前结果，进程退出后从历史手动恢复；不将凭据写入 Activity Bundle。
 
 ## 边界
 
-Windows 的 DPAPI 历史无法直接在 Android 解密。Android v1.0.0 的历史可直接升级保留。支持单条 TOTP URI，不支持 HOTP、Google Authenticator 批量迁移 URI 或二维码导入。手机需保持正确的系统时间。历史不是跨设备备份，卸载会删除。复制内容受系统和输入法剪贴板设置影响。
+Windows 的 DPAPI 历史无法直接在 Android 解密。Android v1.0.0 的历史可直接升级保留。支持单条 TOTP URI 及其二维码，不支持 HOTP 或 Google Authenticator 批量迁移 URI/二维码。手机需保持正确的系统时间。历史不是跨设备备份，卸载会删除。复制内容受系统和输入法剪贴板设置影响。
 
 实现参考：[Authenticator Key URI](https://github.com/google/google-authenticator/wiki/Key-Uri-Format)、[Android Keystore AES-GCM](https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec)、[敏感剪贴板](https://developer.android.com/develop/ui/views/touch-and-input/copy-paste)、[RFC 6238](https://www.rfc-editor.org/rfc/rfc6238)。

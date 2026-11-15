@@ -1,0 +1,20 @@
+账号验证管家 第三方组件
+
+Windows QR 解码：ZXing.Net 0.16.11，.NET Framework 4.0 程序集。
+项目：https://github.com/micjahn/ZXing.Net
+来源：https://api.nuget.org/v3-flatcontainer/zxing.net/0.16.11/zxing.net.0.16.11.nupkg
+包 SHA-256：7d39234d668e558b3d374d18116ed57021d7c0df482801f1e1db4f1db9314ec3
+zxing.dll SHA-256：643a5a3db0ae02998b507beb82dbc362a2d5593b429963db17eb78089aabb95a
+许可证：Apache License 2.0，完整文本见 third_party/zxing/LICENSE.txt；Windows 发布包中为 ZXing-LICENSE.txt。
+该程序集嵌入主 EXE，运行时不需另带 DLL。
+
+Android QR 解码：com.google.zxing:core:3.5.4。
+项目：https://github.com/zxing/zxing
+版权所有：ZXing authors；Apache License 2.0。
+
+Android 照片文件 URI：androidx.core:core:1.17.0 及其传递依赖。
+项目：https://developer.android.com/jetpack/androidx/releases/core
+版权所有：The Android Open Source Project；Apache License 2.0。
+Android APK 的 assets/Apache-2.0.txt 提供完整 Apache License 2.0 文本，assets/THIRD_PARTY_NOTICES.txt 提供组件说明；相关文本也随源码及 Windows 便携包提供。
+
+二维码图像仅在设备本地解码。本项目没有使用在线识别服务。

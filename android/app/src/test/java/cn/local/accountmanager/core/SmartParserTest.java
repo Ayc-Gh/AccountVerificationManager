@@ -99,7 +99,7 @@ public class SmartParserTest {
         assertEquals(4, restored.size()); assertEquals(AccountData.Kind.SECRET, restored.get(0).kind);
     }
 
-    @Test public void readsV1HistoryAndWritesV2WithoutLosingOldFields() throws Exception {
+    @Test public void readsV1HistoryAndWritesV3WithoutLosingOldFields() throws Exception {
         byte[] v1 = legacyHistory();
         List<HistoryEntry> migrated = HistoryCodec.decode(v1);
         HistoryEntry old = migrated.get(0);

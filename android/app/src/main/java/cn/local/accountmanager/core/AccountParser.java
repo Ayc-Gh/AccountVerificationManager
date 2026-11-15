@@ -26,7 +26,9 @@ public final class AccountParser {
             throw new IllegalArgumentException("每次请粘贴一条账号记录，不要包含多行内容。");
         Span first, last;
         int scanEnd = text.length();
-        while (scanEnd > 0 && (text.charAt(scanEnd - 1) == '=' || Base32.whitespace(text.charAt(scanEnd - 1)))) scanEnd--;
+        int uriIndex = text.toLowerCase(java.util.Locale.ROOT).indexOf("otpauth://");
+        if (uriIndex > 0) scanEnd = uriIndex;
+        else while (scanEnd > 0 && (text.charAt(scanEnd - 1) == '=' || Base32.whitespace(text.charAt(scanEnd - 1)))) scanEnd--;
         if (manualSeparator == null) {
             List<Span> spans = findSeparators(text, scanEnd);
             if (spans.size() < 2) throw new IllegalArgumentException("未找到两处分隔符。自动模式需要连续 3 个及以上符号，也可手动指定。");
@@ -45,16 +47,14 @@ public final class AccountParser {
         }
         String account = trim(text.substring(0, first.start));
         String password = text.substring(first.start + first.length, last.start);
-        String secret = Base32.normalize(text.substring(last.start + last.length));
+        String secret = trim(text.substring(last.start + last.length));
         if (account.isEmpty()) throw new IllegalArgumentException("账号不能为空。");
         if (password.isEmpty()) throw new IllegalArgumentException("密码不能为空。");
-        // Validate padding before canonicalizing, so malformed padding cannot be silently accepted.
-        byte[] key = Base32.decode(secret);
-        java.util.Arrays.fill(key, (byte) 0);
-        int padding = secret.indexOf('=');
-        if (padding >= 0) secret = secret.substring(0, padding);
-        return new AccountData(account, password, secret, text.substring(first.start, first.start + first.length),
-                text.substring(last.start, last.start + last.length));
+        try (AccountData otp = secret.regionMatches(true, 0, "otpauth:", 0, 8) ? AuthenticatorUri.parse(secret) :
+                new AccountData("", "", secret, "", "", AccountData.Kind.SECRET, "", OtpParameters.DEFAULT)) {
+            return new AccountData(account, password, otp.secret, text.substring(first.start, first.start + first.length),
+                    text.substring(last.start, last.start + last.length), AccountData.Kind.RECORD, otp.issuer, otp.otp);
+        }
     }
 
     private static List<Span> findSeparators(String text, int end) {

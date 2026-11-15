@@ -23,8 +23,6 @@ public final class AccountData implements AutoCloseable {
             throw new IllegalArgumentException("独立密钥或 URI 中不能包含密码和分隔符。");
         if (kind == Kind.SECRET && (!account.isEmpty() || !issuer.isEmpty() || !otp.equals(OtpParameters.DEFAULT)))
             throw new IllegalArgumentException("独立密钥的参数无效。");
-        if (kind == Kind.RECORD && (!issuer.isEmpty() || !otp.equals(OtpParameters.DEFAULT)))
-            throw new IllegalArgumentException("账号记录的验证码参数无效。");
         this.account = account;
         this.password = password;
         String normalized = Base32.normalize(secret);
@@ -72,10 +70,20 @@ public final class AccountData implements AutoCloseable {
 
     public String originalText() {
         return switch (kind) {
-            case RECORD -> account + firstSeparator + password + lastSeparator + secret;
+            case RECORD -> account + firstSeparator + password + lastSeparator + ((!issuer.isEmpty() || !otp.equals(OtpParameters.DEFAULT)) ? AuthenticatorUri.format(this) : secret);
             case SECRET -> secret;
             case URI -> AuthenticatorUri.format(this);
         };
+    }
+
+    public AccountData replaceOtp(String text) {
+        try (AccountData incoming = SmartParser.parse(text, null)) {
+            if (incoming.kind == Kind.RECORD) throw new IllegalArgumentException("请只粘贴新 2FA 密钥或 Authenticator URI。");
+            boolean uri = incoming.kind == Kind.URI;
+            Kind nextKind = kind == Kind.RECORD ? Kind.RECORD : uri || kind == Kind.URI ? Kind.URI : Kind.SECRET;
+            return new AccountData(account, password, incoming.secret, firstSeparator, lastSeparator, nextKind,
+                    uri ? incoming.issuer : issuer, uri ? incoming.otp : otp);
+        }
     }
 
     @Override public void close() {

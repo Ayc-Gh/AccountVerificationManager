@@ -26,6 +26,8 @@ public final class HistoryRepository {
     public void unlisten(Listener listener) { listeners.remove(listener); }
     public void load() { execute(store::load, null); }
     public void clear(Callback callback) { execute(store::clear, callback); }
+    public void rename(String id, String name, Callback callback) { execute(() -> store.rename(id, name), callback); }
+    public void replaceOtp(HistoryEntry expected, String text, Callback callback) { execute(() -> store.replaceOtp(expected, text), callback); }
     public void record(AccountData data, boolean automatic, Callback callback) {
         // Snapshot fields, not the current result's closeable key, before enqueueing work.
         HistoryEntry snapshot = HistoryEntry.fromData("", data, automatic, 0);

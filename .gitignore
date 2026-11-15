@@ -5,8 +5,13 @@ portable-*/
 *.zip
 *.exe
 *.dll
+!third_party/zxing/zxing.dll
 *.pdb
 history.bin
 history.bin.tmp.*
 .env
 .env.*
+.local/
+releases/
+dist/
+local-build.psd1

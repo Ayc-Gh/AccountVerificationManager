@@ -53,6 +53,16 @@ public final class EncryptedHistoryStore {
         write(next); return next;
     }
 
+    public synchronized List<HistoryEntry> rename(String id, String name) throws IOException, GeneralSecurityException {
+        List<HistoryEntry> next = HistoryModel.rename(load(), id, name);
+        write(next); return next;
+    }
+
+    public synchronized List<HistoryEntry> replaceOtp(HistoryEntry expected, String text) throws IOException, GeneralSecurityException {
+        List<HistoryEntry> next = HistoryModel.replaceOtp(load(), expected, text);
+        write(next); return next;
+    }
+
     private void write(List<HistoryEntry> entries) throws IOException, GeneralSecurityException {
         byte[] plain = HistoryCodec.encode(entries), encrypted;
         try { encrypted = HistoryCipher.encrypt(plain, key(true)); }

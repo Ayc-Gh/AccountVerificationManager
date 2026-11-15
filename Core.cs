@@ -54,6 +54,21 @@ namespace AccountSplit2FA
                 Totp.Generate(key, unixSeconds, Digits, Period, Algorithm);
         }
 
+        public AccountData ReplaceOtp(string replacement)
+        {
+            using (AccountData incoming = SmartParser.Parse(replacement)) {
+                if (incoming.InputKind == InputKind.Record) throw new FormatException("请只粘贴新 2FA 密钥或 Authenticator URI。");
+                bool uri = incoming.InputKind == InputKind.AuthenticatorUri;
+                if (!uri && OtpKind == OtpKind.Hotp) throw new FormatException("更换 HOTP 请使用包含 counter 的完整 Authenticator URI。");
+                InputKind kind = InputKind == InputKind.Record ? InputKind.Record : uri || InputKind == InputKind.AuthenticatorUri ? InputKind.AuthenticatorUri : InputKind.Secret;
+                byte[] nextKey = Base32.Decode(incoming.Secret);
+                try { return new AccountData(Account, Password, incoming.Secret, nextKey, FirstSeparator, LastSeparator, kind,
+                    uri ? incoming.OtpKind : OtpKind, uri ? incoming.Issuer : Issuer, uri ? incoming.Algorithm : Algorithm,
+                    uri ? incoming.Digits : Digits, uri ? incoming.Period : Period, uri ? incoming.Counter : Counter, uri || UsesUri); }
+                catch { Array.Clear(nextKey, 0, nextKey.Length); throw; }
+            }
+        }
+
         public string OriginalText()
         {
             if (InputKind == InputKind.Secret) return Secret;
