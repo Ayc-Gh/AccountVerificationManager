@@ -45,13 +45,13 @@ public final class HistoryNameTest {
         assertThrows(IllegalArgumentException.class, () -> HistoryModel.rename(old, UUID.randomUUID().toString(), "missing"));
         assertEquals("", old.get(0).name);
     }
-    @Test public void legacyV1AndV2MigrateToV3WithEmptyNames() throws Exception {
+    @Test public void legacyV1AndV2MigrateToV4WithEmptyNames() throws Exception {
         for (int version : new int[]{1, 2}) {
             List<HistoryEntry> old = HistoryCodec.decode(legacy(version));
             HistoryEntry original = old.get(0); assertEquals("", original.name);
             List<HistoryEntry> named = HistoryModel.rename(old, original.id, "旧版记录");
             byte[] encoded = HistoryCodec.encode(named);
-            try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(encoded))) { in.readInt(); assertEquals(3, in.readInt()); }
+            try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(encoded))) { in.readInt(); assertEquals(4, in.readInt()); }
             HistoryEntry entry = HistoryCodec.decode(encoded).get(0);
             assertEquals("旧版记录", entry.name); assertEquals(original.id, entry.id);
             assertEquals(original.originalText(), entry.originalText()); assertEquals(original.currentCode(59), entry.currentCode(59));

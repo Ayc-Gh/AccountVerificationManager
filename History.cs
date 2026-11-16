@@ -11,6 +11,9 @@ namespace AccountSplit2FA
     {
         public const int MaxNameLength = 40;
         public string Name { get; private set; }
+        public DateTime? ExpiresAtUtc { get; private set; }
+        public bool Pinned { get; private set; }
+        public bool IsExpired(DateTime now) { return ExpiresAtUtc.HasValue && ExpiresAtUtc.Value <= now; }
         public Guid Id { get; private set; }
         public string Account { get; private set; }
         public string Password { get; private set; }
@@ -31,7 +34,7 @@ namespace AccountSplit2FA
         internal HistoryEntry(Guid id, string account, string password, string secret,
             string firstSeparator, string lastSeparator, bool automatic, DateTime recognizedAtUtc,
             InputKind inputKind = InputKind.Record, OtpKind otpKind = OtpKind.Totp, string issuer = "",
-            string algorithm = "SHA1", int digits = 6, int period = 30, ulong counter = 0, bool usesUri = false, string name = "")
+            string algorithm = "SHA1", int digits = 6, int period = 30, ulong counter = 0, bool usesUri = false, string name = "", DateTime? expiresAtUtc = null, bool pinned = false)
         {
             Id = id; Account = account; Password = password; Secret = secret;
             FirstSeparator = firstSeparator; LastSeparator = lastSeparator;
@@ -39,6 +42,7 @@ namespace AccountSplit2FA
             InputKind = inputKind; OtpKind = otpKind; Issuer = issuer; Algorithm = algorithm;
             Digits = digits; Period = period; Counter = counter; UsesUri = usesUri;
             Name = NormalizeName(name);
+            ExpiresAtUtc = expiresAtUtc.HasValue ? expiresAtUtc.Value.ToUniversalTime() : (DateTime?)null; Pinned = pinned;
         }
 
         public static string NormalizeName(string value)
@@ -52,7 +56,13 @@ namespace AccountSplit2FA
         internal HistoryEntry WithName(string name)
         {
             return new HistoryEntry(Id, Account, Password, Secret, FirstSeparator, LastSeparator, Automatic, RecognizedAtUtc,
-                InputKind, OtpKind, Issuer, Algorithm, Digits, Period, Counter, UsesUri, name);
+                InputKind, OtpKind, Issuer, Algorithm, Digits, Period, Counter, UsesUri, name, ExpiresAtUtc, Pinned);
+        }
+
+        internal HistoryEntry WithManagement(DateTime? expires, bool pinned)
+        {
+            return new HistoryEntry(Id, Account, Password, Secret, FirstSeparator, LastSeparator, Automatic, RecognizedAtUtc,
+                InputKind, OtpKind, Issuer, Algorithm, Digits, Period, Counter, UsesUri, Name, expires, pinned);
         }
 
         public AccountData Open()
@@ -101,12 +111,14 @@ namespace AccountSplit2FA
         private const int Magic = 0x41564D48;
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("AccountVerificationManager.History.v1");
         private readonly string path, mutexName;
+        private readonly Func<DateTime> clock;
         private List<HistoryEntry> entries = new List<HistoryEntry>();
         public IList<HistoryEntry> Entries { get { return entries.AsReadOnly(); } }
         public string FilePath { get { return path; } }
 
-        public HistoryStore(string filePath)
+        public HistoryStore(string filePath, Func<DateTime> clock = null)
         {
+            this.clock = clock ?? delegate { return DateTime.UtcNow; };
             path = Path.GetFullPath(filePath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "AccountVerificationManager", "history.bin"));
             using (SHA256 sha = SHA256.Create())
@@ -115,29 +127,105 @@ namespace AccountSplit2FA
 
         public void Load()
         {
-            Locked(delegate { entries = Read(); });
+            Locked(delegate { entries = ReadActive(); });
         }
 
-        public void Record(AccountData data, bool automatic)
+        public HistoryEntry Record(AccountData data, bool automatic, DateTime? expiresAtUtc = null)
         {
+            return RecordCore(data, automatic, expiresAtUtc, null);
+        }
+        public HistoryEntry RecordWithRetention(AccountData data, bool automatic, RetentionPeriod period)
+        {
+            return RecordCore(data, automatic, null, period);
+        }
+        private HistoryEntry RecordCore(AccountData data, bool automatic, DateTime? expiresAtUtc, RetentionPeriod period)
+        {
+            HistoryEntry saved = null;
             Locked(delegate {
-                List<HistoryEntry> next = Read();
+                List<HistoryEntry> next = ReadActive();
                 Guid id = Guid.NewGuid();
                 string name = "";
+                bool pinned = false, duplicate = false;
                 for (int i = next.Count - 1; i >= 0; i--)
                 {
                     HistoryEntry item = next[i];
                     if (item.Account == data.Account && item.Password == data.Password && item.Secret == data.Secret &&
                         item.InputKind == data.InputKind && item.OtpKind == data.OtpKind && item.Algorithm == data.Algorithm &&
                         item.Digits == data.Digits && item.Period == data.Period && item.Counter == data.Counter && item.Issuer == data.Issuer)
-                    { id = item.Id; name = item.Name; next.RemoveAt(i); }
+                    { id = item.Id; name = item.Name; expiresAtUtc = item.ExpiresAtUtc; pinned = item.Pinned; duplicate = true; next.RemoveAt(i); }
                 }
-                next.Insert(0, new HistoryEntry(id, data.Account, data.Password, data.Secret,
-                    data.FirstSeparator, data.LastSeparator, automatic, DateTime.UtcNow,
-                    data.InputKind, data.OtpKind, data.Issuer, data.Algorithm, data.Digits, data.Period, data.Counter, data.UsesUri, name));
+                if (!duplicate && next.Count >= Limit && next.TrueForAll(delegate(HistoryEntry e) { return e.Pinned; }))
+                    throw new InvalidOperationException("十条历史均已置顶，请先取消置顶或删除一条记录。");
+                DateTime recognizedAt = clock();
+                if (!duplicate && period != null) expiresAtUtc = period.ExpiresAt(recognizedAt);
+                ValidateExpiry(expiresAtUtc);
+                saved = new HistoryEntry(id, data.Account, data.Password, data.Secret,
+                    data.FirstSeparator, data.LastSeparator, automatic, recognizedAt,
+                    data.InputKind, data.OtpKind, data.Issuer, data.Algorithm, data.Digits, data.Period, data.Counter, data.UsesUri, name, expiresAtUtc, pinned);
+                next.Insert(0, saved); next = Ordered(next);
                 if (next.Count > Limit) next.RemoveRange(Limit, next.Count - Limit);
                 Write(next); entries = next;
             });
+            return saved;
+        }
+
+        private void ValidateExpiry(DateTime? expires)
+        {
+            if (expires.HasValue && expires.Value.ToUniversalTime() <= clock()) throw new FormatException("到期时间必须晚于当前时间。");
+        }
+
+        private static List<HistoryEntry> Ordered(List<HistoryEntry> source)
+        {
+            List<HistoryEntry> ordered = source.FindAll(delegate(HistoryEntry e) { return e.Pinned; });
+            ordered.AddRange(source.FindAll(delegate(HistoryEntry e) { return !e.Pinned; })); return ordered;
+        }
+
+        private List<HistoryEntry> ReadActive()
+        {
+            List<HistoryEntry> next = Read(); DateTime now = clock();
+            if (next.RemoveAll(delegate(HistoryEntry e) { return e.IsExpired(now); }) > 0) Write(next);
+            return Ordered(next);
+        }
+
+        public void Delete(Guid id)
+        {
+            Locked(delegate { List<HistoryEntry> next = ReadActive(); next.RemoveAll(delegate(HistoryEntry e) { return e.Id == id; }); Write(next); entries = next; });
+        }
+
+        public int Import(IList<HistoryEntry> imported)
+        {
+            int added = 0;
+            Locked(delegate {
+                List<HistoryEntry> next = ReadActive();
+                foreach (HistoryEntry e in imported) {
+                    if (e.IsExpired(clock())) continue;
+                    bool duplicate = next.Exists(delegate(HistoryEntry x) { return x.Account == e.Account && x.Password == e.Password && x.Secret == e.Secret && x.InputKind == e.InputKind && x.OtpKind == e.OtpKind && x.Issuer == e.Issuer && x.Algorithm == e.Algorithm && x.Digits == e.Digits && x.Period == e.Period && x.Counter == e.Counter; });
+                    if (duplicate) continue;
+                    if (next.Count >= Limit) throw new InvalidOperationException("导入后超过 10 条，请减少选择或先删除历史；本次未导入任何记录。");
+                    using (AccountData validated = e.Open()) { }
+                    next.Add(new HistoryEntry(Guid.NewGuid(), e.Account, e.Password, e.Secret, e.FirstSeparator, e.LastSeparator, e.Automatic, e.RecognizedAtUtc, e.InputKind, e.OtpKind, e.Issuer, e.Algorithm, e.Digits, e.Period, e.Counter, e.UsesUri, e.Name, e.ExpiresAtUtc, e.Pinned)); added++;
+                }
+                next = Ordered(next); Write(next); entries = next;
+            }); return added;
+        }
+
+        public HistoryEntry SetExpiration(Guid id, DateTime? expires)
+        {
+            ValidateExpiry(expires); return Manage(id, expires, null, true);
+        }
+
+        public HistoryEntry SetPinned(Guid id, bool pinned) { return Manage(id, null, pinned, false); }
+
+        private HistoryEntry Manage(Guid id, DateTime? expires, bool? pinned, bool changeExpiry)
+        {
+            HistoryEntry updated = null;
+            Locked(delegate {
+                List<HistoryEntry> next = ReadActive(); int i = next.FindIndex(delegate(HistoryEntry e) { return e.Id == id; });
+                if (i < 0) throw new InvalidOperationException("记录已到期或被移除，请刷新历史。");
+                if (changeExpiry) ValidateExpiry(expires);
+                updated = next[i].WithManagement(changeExpiry ? expires : next[i].ExpiresAtUtc, pinned ?? next[i].Pinned);
+                next[i] = updated; next = Ordered(next); Write(next); entries = next;
+            }); return updated;
         }
 
         public void Clear()
@@ -149,7 +237,7 @@ namespace AccountSplit2FA
         public HistoryEntry Find(Guid id)
         {
             HistoryEntry found = null;
-            Locked(delegate { entries = Read(); found = entries.Find(delegate(HistoryEntry entry) { return entry.Id == id; }); });
+            Locked(delegate { entries = ReadActive(); found = entries.Find(delegate(HistoryEntry entry) { return entry.Id == id; }); });
             return found;
         }
 
@@ -158,7 +246,7 @@ namespace AccountSplit2FA
             string name = HistoryEntry.NormalizeName(value);
             HistoryEntry renamed = null;
             Locked(delegate {
-                List<HistoryEntry> next = Read();
+                List<HistoryEntry> next = ReadActive();
                 int index = next.FindIndex(delegate(HistoryEntry item) { return item.Id == id; });
                 if (index < 0) throw new InvalidOperationException("记录已不在最近 10 条历史中，请刷新后重试。");
                 renamed = next[index].WithName(name); next[index] = renamed;
@@ -171,7 +259,7 @@ namespace AccountSplit2FA
         {
             HistoryEntry advanced = null;
             Locked(delegate {
-                List<HistoryEntry> next = Read();
+                List<HistoryEntry> next = ReadActive();
                 int index = next.FindIndex(delegate(HistoryEntry candidate) { return candidate.Id == id; });
                 if (index < 0) throw new InvalidOperationException("记录已被清空或移出最近 10 条，请重新识别。");
                 HistoryEntry item = next[index];
@@ -179,7 +267,7 @@ namespace AccountSplit2FA
                     throw new InvalidOperationException("计数器已在其他窗口更新，请重新打开历史记录。");
                 if (item.Counter == UInt64.MaxValue) throw new InvalidOperationException("HOTP 计数器已达上限。");
                 advanced = new HistoryEntry(item.Id, item.Account, item.Password, item.Secret, item.FirstSeparator, item.LastSeparator,
-                    item.Automatic, item.RecognizedAtUtc, item.InputKind, item.OtpKind, item.Issuer, item.Algorithm, item.Digits, item.Period, item.Counter + 1, item.UsesUri, item.Name);
+                    item.Automatic, item.RecognizedAtUtc, item.InputKind, item.OtpKind, item.Issuer, item.Algorithm, item.Digits, item.Period, item.Counter + 1, item.UsesUri, item.Name, item.ExpiresAtUtc, item.Pinned);
                 next[index] = advanced; Write(next); entries = next;
             });
             return advanced;
@@ -189,7 +277,7 @@ namespace AccountSplit2FA
         {
             HistoryEntry updated = null;
             Locked(delegate {
-                List<HistoryEntry> next = Read();
+                List<HistoryEntry> next = ReadActive();
                 int index = next.FindIndex(delegate(HistoryEntry item) { return item.Id == expected.Id; });
                 if (index < 0) throw new InvalidOperationException("原记录已被移除，请刷新历史后重试。");
                 HistoryEntry current = next[index];
@@ -203,7 +291,7 @@ namespace AccountSplit2FA
                             throw new InvalidOperationException("更换结果与另一条历史记录相同，请直接使用那条记录。");
                     updated = new HistoryEntry(current.Id, changed.Account, changed.Password, changed.Secret, changed.FirstSeparator, changed.LastSeparator,
                         current.Automatic, current.RecognizedAtUtc, changed.InputKind, changed.OtpKind, changed.Issuer, changed.Algorithm, changed.Digits,
-                        changed.Period, changed.Counter, changed.UsesUri, current.Name);
+                        changed.Period, changed.Counter, changed.UsesUri, current.Name, current.ExpiresAtUtc, current.Pinned);
                 }
                 next[index] = updated; Write(next); entries = next;
             });
@@ -240,7 +328,7 @@ namespace AccountSplit2FA
                 {
                     if (reader.ReadInt32() != Magic) throw new InvalidDataException("历史记录格式无效。");
                     int version = reader.ReadInt32();
-                    if (version < 1 || version > 3) throw new InvalidDataException("历史记录版本不兼容。");
+                    if (version < 1 || version > 4) throw new InvalidDataException("历史记录版本不兼容。");
                     int count = reader.ReadInt32();
                     if (count < 0 || count > Limit) throw new InvalidDataException("历史记录数量异常。");
                     List<HistoryEntry> result = new List<HistoryEntry>();
@@ -261,11 +349,15 @@ namespace AccountSplit2FA
                         ulong counter = version == 1 ? 0 : reader.ReadUInt64();
                         bool usesUri = version != 1 && reader.ReadBoolean();
                         string name = version >= 3 ? ReadText(reader) : "";
+                        long expiryTicks = version >= 4 ? reader.ReadInt64() : 0;
+                        bool pinned = version >= 4 && reader.ReadBoolean();
+                        if (expiryTicks < 0 || expiryTicks > DateTime.MaxValue.Ticks) throw new InvalidDataException("历史到期时间无效。");
+                        DateTime? expires = expiryTicks == 0 ? (DateTime?)null : new DateTime(expiryTicks, DateTimeKind.Utc);
                         if (ticks < DateTime.MinValue.Ticks || ticks > DateTime.MaxValue.Ticks ||
                             (inputKind == InputKind.Record && (account.Length == 0 || password.Length == 0 || first.Length == 0 || last.Length == 0)))
                             throw new InvalidDataException("历史记录字段无效。");
                         HistoryEntry entry = new HistoryEntry(id, account, password, secret, first, last, automatic, new DateTime(ticks, DateTimeKind.Utc),
-                            inputKind, otpKind, issuer, algorithm, digits, period, counter, usesUri, name);
+                            inputKind, otpKind, issuer, algorithm, digits, period, counter, usesUri, name, expires, pinned);
                         using (AccountData validated = entry.Open()) { }
                         result.Add(entry);
                     }
@@ -297,7 +389,7 @@ namespace AccountSplit2FA
                 {
                     using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, true))
                     {
-                        writer.Write(Magic); writer.Write(3); writer.Write(next.Count);
+                        writer.Write(Magic); writer.Write(4); writer.Write(next.Count);
                         foreach (HistoryEntry item in next)
                         {
                             writer.Write(item.Id.ToString("N")); writer.Write(item.Account); writer.Write(item.Password); writer.Write(item.Secret);
@@ -305,6 +397,7 @@ namespace AccountSplit2FA
                             writer.Write((byte)item.InputKind); writer.Write(item.Issuer); writer.Write(item.Algorithm); writer.Write(item.Digits);
                             writer.Write(item.Period); writer.Write((byte)item.OtpKind); writer.Write(item.Counter); writer.Write(item.UsesUri);
                             writer.Write(item.Name);
+                            writer.Write(item.ExpiresAtUtc.HasValue ? item.ExpiresAtUtc.Value.Ticks : 0L); writer.Write(item.Pinned);
                         }
                     }
                     plain = stream.ToArray();

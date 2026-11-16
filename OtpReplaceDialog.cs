@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -11,15 +12,17 @@ namespace AccountSplit2FA
         private readonly AccountData original;
         private AccountData preview;
         private readonly Action<string> commit;
+        private readonly Func<bool> valid;
         private readonly TextBox replacementInput;
         private readonly Label newCode, parameters, feedback;
         private readonly ActionButton save, copyNew, upload;
         private readonly Timer timer;
+        private readonly DeferredContextMenu qrChoices;
         private long editVersion;
 
-        public OtpReplaceDialog(HistoryEntry entry, Action<string> commit)
+        public OtpReplaceDialog(HistoryEntry entry, Action<string> commit, Func<bool> valid = null)
         {
-            this.commit = commit; original = entry.Open();
+            this.commit = commit; this.valid = valid; original = entry.Open();
             Text = "更换 2FA"; Font = Theme.Font(10, FontStyle.Regular); BackColor = Theme.Background;
             AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
             FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent;
@@ -63,6 +66,7 @@ namespace AccountSplit2FA
             replacementInput.TextChanged += delegate { editVersion++; UpdatePreview(); };
             timer = new Timer { Interval = 200 }; timer.Tick += delegate { UpdateCode(); }; timer.Start();
             Shown += delegate { replacementInput.Focus(); }; UpdatePreview();
+            qrChoices = new DeferredContextMenu(this);
         }
         private void UpdatePreview()
         {
@@ -77,7 +81,7 @@ namespace AccountSplit2FA
                 save.Enabled = copyNew.Enabled = true; UpdateCode();
             } catch (FormatException error) { Error(error.Message); }
         }
-        private void UpdateCode() { if (preview != null) { string value = preview.Code(Totp.UnixNow()); newCode.Text = value.Insert(value.Length / 2, " "); } }
+        private void UpdateCode() { if (valid != null && !valid()) { Close(); return; } if (preview != null) { string value = preview.Code(Totp.UnixNow()); newCode.Text = value.Insert(value.Length / 2, " "); } }
         private void Save()
         {
             if (preview == null || !save.Enabled) return;
@@ -97,16 +101,18 @@ namespace AccountSplit2FA
                         upload.Enabled = true; if (version != editVersion) return;
                         if (task.IsFaulted) { Error(task.Exception.GetBaseException() is FormatException ? task.Exception.GetBaseException().Message : "无法读取图片，请重试。"); return; }
                         if (task.Result.Count == 1) replacementInput.Text = task.Result[0];
-                        else {
-                            ContextMenuStrip choices = new ContextMenuStrip();
-                            foreach (string text in task.Result) { string selected = text; choices.Items.Add(QrImageReader.Describe(text), null, delegate { replacementInput.Text = selected; }); }
-                            choices.Closed += delegate { choices.Dispose(); }; choices.Show(upload, new Point(0, upload.Height));
-                        }
+                        else ShowQrChoices(task.Result);
                     }); } catch (InvalidOperationException) { }
                 }, TaskScheduler.Default);
             }
         }
-        private void Copy(string value, string message) { try { Clipboard.SetText(value); feedback.Text = message; feedback.ForeColor = Theme.Muted; } catch (ExternalException) { Error("剪贴板暂时不可用，请重试。"); } }
+        private void ShowQrChoices(IList<string> choices)
+        {
+            qrChoices.ResetActions();
+            foreach (string text in choices) { string selected = text; qrChoices.AddAction(QrImageReader.Describe(text), delegate { replacementInput.Text = selected; }); }
+            qrChoices.Show(upload, new Point(0, upload.Height));
+        }
+        private void Copy(string value, string message) { if (valid != null && !valid()) { Close(); return; } try { Clipboard.SetText(value); feedback.Text = message; feedback.ForeColor = Theme.Muted; } catch (ExternalException) { Error("剪贴板暂时不可用，请重试。"); } }
         private void Error(string message) { feedback.Text = message; feedback.ForeColor = Color.FromArgb(197, 64, 77); }
         protected override bool ProcessDialogKey(Keys keyData) { if (keyData == Keys.Escape) { Close(); return true; } return base.ProcessDialogKey(keyData); }
         protected override void Dispose(bool disposing) { if (disposing) { if (timer != null) timer.Dispose(); if (preview != null) preview.Dispose(); original.Dispose(); } base.Dispose(disposing); }

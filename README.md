@@ -1,13 +1,31 @@
 # 账号验证管家
 
-离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版，两端当前版本统一为 1.8.0。
+离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版，两端版本统一为 1.9.2，下载见下表。
 
 统一维护入口：[项目接手与两端差异](docs/项目接手.md)。Windows 源码在仓库根目录，Android 源码在 `android/`；两端使用同一仓库、分别保留版本号。可通过 `./verify.ps1` 一次验证两端，Android 工具链配置见 `local-build.example.psd1`。
 
 | 平台 | 下载 | 文档 |
 | --- | --- | --- |
-| Windows 10 / 11 | [Windows v1.8.0 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.8.0/AccountVerificationManager-v1.8.0-win-portable.zip) | [Windows 使用说明](使用说明.txt) |
-| Android 8.0+ | [Android v1.8.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.8.0/AccountVerificationManager-android-v1.8.0.apk) | [Android 构建与使用说明](android/README.md) |
+| Windows 10 / 11 | [Windows v1.9.2 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) | [Windows 使用说明](使用说明.txt) |
+| Android 8.0+ | [Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) | [Android 构建与使用说明](android/README.md) |
+
+## v1.9.2 数字与单位保存期限
+
+保存期限改为手动输入整数，旁边选择“分 / 时 / 天 / 周 / 月”；1 天为 24 小时、1 周为 7 天、1 月为 30 天。首次保存新记录时开始计时，历史管理中保存新期限时重新计时；默认可永久保留。
+
+包括此前 1.9.0 的历史管理、多选加密导入导出，以及 1.9.1 的 Windows 管理菜单修复。Windows 4,255 项检查、Android 46 项单元测试与 142 项真机验收通过，两端加密文件双向互通通过。[使用与验证](docs/v1.9.2保存期限与发布验证.md)。
+
+## v1.9.1 管理菜单修复
+
+修复 Windows 历史管理菜单点击后出现 `ContextMenuStrip` 已释放异常，以及更换 2FA 时多二维码选择菜单的同类问题。菜单随所属窗口释放，选中操作在菜单点击处理结束后执行。Android 同步版本号；修复已包含于 1.9.2。[修复与验证](docs/v1.9.1管理菜单修复.md)。
+
+## v1.9.0 历史管理与加密导入导出
+
+首次解析可选到期时间，历史支持修改期限、删除、置顶和取消置顶。到期记录在应用运行时清理，关闭期间到期则在下次启动清理；置顶记录也会到期。重复解析保留已设置的期限和置顶状态。
+
+支持多选历史导出为密码加密的 `.avmx` 文件，输入密码后可选择多条导入。文件包括账号、密码、2FA 密钥及 `otpauth://` 链接、名称与历史设置。两端可互导支持的 TOTP 记录，Android 仍不支持 HOTP。重复导入保留本机版本，容量超限时整批拒绝；本地仍保留最多十条记录。
+
+这些功能已包含于 1.9.2。[使用与验证](docs/v1.9.0历史管理与加密导入导出.md)。
 
 ## v1.8.0 便捷更换 2FA
 
@@ -47,10 +65,10 @@ Android 已恢复防截图、录屏与最近任务预览保护，复制内容标
 
 Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上，无网络权限、无需 Root。v1.8.0 支持更换 2FA、历史命名、拍照与上传二维码图片，并智能识别账号记录、纯 2FA 密钥和 Authenticator URI；支持 URI 的 SHA1/SHA256/SHA512、6/8 位与实际周期，保留复制及最近 10 条历史。历史使用 Android Keystore 与 AES-256-GCM 在本机加密保存。
 
-- [Android v1.8.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.8.0/AccountVerificationManager-android-v1.8.0.apk) · [发行说明](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.8.0)
+- [Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) · [发行说明](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.9.2)
 - [Android 项目说明](android/README.md) · [功能对应](android/docs/项目理解与功能对应.md) · [验证报告](android/docs/验证报告.md)
 - 验证：34 组单元测试、107 项真机回归检查通过，发布版 Lint 无错误；安全检查范围见 [恢复验证](docs/安全保护恢复验证.md)。
-- Windows DPAPI 历史暂不能导入 Android；卸载会删除手机本地历史。
+- 本机 DPAPI 密文不能直接复制到 Android；1.9.0 可通过密码加密导出文件互导 TOTP 记录。卸载会删除手机本地历史。
 
 | 纯密钥 | Authenticator URI | 识别结果 |
 | --- | --- | --- |
@@ -58,15 +76,15 @@ Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上
 
 ## Windows 桌面版
 
-Windows v1.8.0 的智能解析功能与构建说明。
+Windows v1.9.2 的智能解析功能与构建说明。
 
 一个在 Windows 本机运行的账号信息整理与 2FA 智能解析工具。自动识别整条账号记录、纯 Base32 密钥和 Authenticator URI（`otpauth://`），生成对应的验证码并分项复制。
 
-[Windows v1.8.0 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.8.0/AccountVerificationManager-v1.8.0-win-portable.zip) · [详细使用说明](./使用说明.txt)
+[Windows v1.9.2 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) · [详细使用说明](./使用说明.txt)
 
 ## 使用
 
-1. 从 [Windows v1.8.0 发行页](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.8.0) 下载便携压缩包并解压。
+1. 从 [Windows v1.9.2 发行页](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.9.2) 下载便携压缩包并解压。
 2. 解压，双击 **账号验证管家.exe**，无需安装或管理员权限。
 3. 粘贴账号记录、纯密钥或 URI，点击 **识别并生成**；也可以点击 **粘贴并解析**，或按 `Ctrl+Enter`。
 4. 点击字段旁的复制按钮，复制账号、密码、密钥或当前验证码。
@@ -124,7 +142,7 @@ TOTP 需要电脑时间准确。本版本支持二维码图片，不支持 `otpa
 
 记录保存已提供的账号、密码、2FA 密钥、识别时间、输入类型及验证码参数，不保存验证码。通常只能在同一设备、同一 Windows 用户账户下解密，不作为跨设备备份格式。兼容 v1.4 的加密历史，保存时自动升级格式。
 
-**清空内容**仅清除当前窗口的输入和结果；历史面板中的 **清空历史记录** 经确认后清除历史。若文件损坏或无法解密，应用会保留原文件并提示。
+**清空内容**仅清除当前窗口的输入和结果；历史面板中的 **清空历史记录** 经确认后清除历史和已恢复的当前记录。若文件损坏或无法解密，应用会保留原文件并提示。
 
 复制操作会写入 Windows 剪贴板，受系统剪贴板历史和同步设置影响。
 

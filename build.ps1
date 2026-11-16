@@ -1,4 +1,4 @@
-﻿param([string]$OutputDirectory = 'release')
+param([string]$OutputDirectory = 'release')
 $ErrorActionPreference = 'Stop'
 $projectDir = $PSScriptRoot
 $compilerPath = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -61,19 +61,21 @@ if ($LASTEXITCODE -ne 0) { throw 'QR test compilation failed.' }
 & $qrTestExe
 if ($LASTEXITCODE -ne 0) { throw 'QR verification failed.' }
 
+$transferPath = Join-Path $projectDir 'HistoryTransfer.cs'
 $historyPath = Join-Path $projectDir 'History.cs'
 $historyTestExe = Join-Path $checksDir 'HistoryTests.exe'
-& $compilerPath /nologo /target:exe /optimize+ /r:System.Security.dll "/out:$historyTestExe" $corePath $historyPath (Join-Path $projectDir 'HistoryTests.cs')
+& $compilerPath /nologo /target:exe /optimize+ /r:System.Security.dll "/out:$historyTestExe" $corePath $historyPath $transferPath (Join-Path $projectDir 'HistoryTests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'History test compilation failed.' }
 & $historyTestExe
 if ($LASTEXITCODE -ne 0) { throw 'History verification failed.' }
 
 $appExe = Join-Path $releaseDir '账号验证管家.exe'
+$transferUiPath = Join-Path $projectDir 'HistoryTransferUi.cs'
 $otpDialogPath = Join-Path $projectDir 'OtpReplaceDialog.cs'
-& $compilerPath /nologo /target:winexe /platform:anycpu /optimize+ /r:System.Windows.Forms.dll /r:System.Security.dll @qrReferences "/win32manifest:$(Join-Path $projectDir 'app.manifest')" "/win32icon:$iconPath" "/out:$appExe" $corePath $historyPath $qrPath $otpDialogPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'AssemblyInfo.cs')
+& $compilerPath /nologo /target:winexe /platform:anycpu /optimize+ /r:System.Windows.Forms.dll /r:System.Security.dll @qrReferences "/win32manifest:$(Join-Path $projectDir 'app.manifest')" "/win32icon:$iconPath" "/out:$appExe" $corePath $historyPath $transferPath $qrPath $otpDialogPath $transferUiPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'AssemblyInfo.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Application compilation failed.' }
 $uiCheckExe = Join-Path $checksDir 'UiChecks.exe'
-& $compilerPath /nologo /target:exe /main:UiChecks /optimize+ /r:System.Windows.Forms.dll /r:System.Security.dll @qrReferences "/out:$uiCheckExe" $corePath $historyPath $qrPath $otpDialogPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'UiChecks.cs')
+& $compilerPath /nologo /target:exe /main:UiChecks /optimize+ /r:System.Windows.Forms.dll /r:System.Security.dll @qrReferences "/out:$uiCheckExe" $corePath $historyPath $transferPath $qrPath $otpDialogPath $transferUiPath (Join-Path $projectDir 'Program.cs') (Join-Path $projectDir 'UiChecks.cs')
 if ($LASTEXITCODE -ne 0) { throw 'UI integration test compilation failed.' }
 & $uiCheckExe
 if ($LASTEXITCODE -ne 0) { throw 'UI integration verification failed.' }

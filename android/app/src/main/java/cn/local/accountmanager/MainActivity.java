@@ -14,6 +14,7 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.io.*;
 import cn.local.accountmanager.core.*;
 import cn.local.accountmanager.storage.HistoryRepository;
 import cn.local.accountmanager.qr.QrImportActivity;
@@ -21,6 +22,9 @@ import cn.local.accountmanager.qr.QrImportActivity;
 public final class MainActivity extends Activity implements HistoryRepository.Listener {
     private static final int QR_IMPORT = 202;
     private static final int QR_REPLACE = 203;
+    private static final int HISTORY_IMPORT = 204, HISTORY_EXPORT = 205;
+    private byte[] pendingExport;
+    private boolean transferBusy;
     private int background, surface, ink, muted, line, subtle, accent, tint, danger;
     private final Handler timer = new Handler(Looper.getMainLooper());
     private HistoryRepository history;
@@ -34,15 +38,18 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private AccountData data;
     private AlertDialog namingDialog;
     private OtpReplacementEditor replacementEditor;
-    private TextView replaceOtpButton;
+    private TextView replaceOtpButton, expiryButton;
+    private RetentionPeriod newRetention;
     private boolean automatic = true, suppress, passwordVisible, historyVisible;
     private long lastStep = -1, editVersion;
     private String selectedId = "";
     private final Runnable tick = new Runnable() {
-        @Override public void run() { updateCode(); timer.postDelayed(this, 200); }
+        @Override public void run() { ensureCurrentRecord(); updateCode(); timer.postDelayed(this, 200); }
     };
     private static final class Session {
         String input, separator, selected;
+        RetentionPeriod newRetention;
+        byte[] pendingExport;
         boolean auto, history;
         HistoryEntry result;
         OtpReplacementEditor.Draft replacement;
@@ -69,7 +76,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         if (previous != null) {
             suppress = true;
             automatic = previous.auto; input.setText(previous.input); separator.setText(previous.separator);
-            selectedId = previous.selected; suppress = false; renderMode();
+            pendingExport = previous.pendingExport; newRetention = previous.newRetention; refreshExpiryButton(); selectedId = previous.selected; suppress = false; renderMode();
             if (previous.result != null) { data = previous.result.open(); showResult(); }
             switchPage(previous.history);
         } else if (state != null) switchPage(state.getBoolean("history"));
@@ -129,6 +136,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         LinearLayout card = card(); content.addView(card, spaced(0));
         LinearLayout heading = horizontal(); heading.addView(text("智能识别解析", 17, ink, true), weight());
         TextView clear = button("清空", surface, muted, 13, () -> {
+            newRetention = null; refreshExpiryButton();
             input.setText(""); invalidateResult("已清空当前内容，历史记录仍保留。"); hideKeyboard();
         }); clear.setId(R.id.clear_input); heading.addView(clear, size(60, 44)); card.addView(heading);
         input = new EditText(this); input.setId(R.id.input); input.setTextSize(14); input.setTextColor(ink); input.setHintTextColor(muted);
@@ -157,6 +165,8 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         detected = text("连续 3 个及以上符号，如 ---、===、|||", 11, muted, false); detected.setPadding(0, dp(8), 0, dp(2)); card.addView(detected);
         LinearLayout actions = horizontal();
         TextView paste = button("粘贴并解析", tint, accent, 14, this::pasteAndParse); paste.setId(R.id.paste);
+        expiryButton = button("保存期限：永久（仅首次保存）", tint, accent, 12, () -> ExpirationEditor.show(this, newRetention, 0, false, value -> { newRetention = value; refreshExpiryButton(); }));
+        expiryButton.setTag("new-expiration"); card.addView(expiryButton, spaced(8));
         TextView parse = button("识别并生成", accent, isDark() ? Color.parseColor("#102C26") : Color.WHITE, 14, this::parseInput); parse.setId(R.id.parse);
         LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dp(50), 1); a.setMarginEnd(dp(8)); actions.addView(paste, a);
         actions.addView(parse, new LinearLayout.LayoutParams(0, dp(50), 1)); card.addView(actions, spaced(12));
@@ -231,15 +241,23 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         clearHistory = button("清空历史", surface, danger, 12, this::confirmClearHistory); clearHistory.setId(R.id.clear_history);
         heading.addView(clearHistory, size(88, 48)); content.addView(heading);
         countLabel = text("0 / 10 条 · 点击记录恢复", 12, muted, false); countLabel.setPadding(0, dp(8), 0, dp(12)); content.addView(countLabel);
+        LinearLayout transfer = horizontal();
+        TextView importButton = button("加密导入", tint, accent, 13, () -> {
+            if (transferBusy) { setStatus("正在处理文件，请稍候。", false); return; }
+            startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), HISTORY_IMPORT);
+        }); importButton.setTag("history-import");
+        TextView exportButton = button("多选导出", tint, accent, 13, this::exportHistory); exportButton.setTag("history-export");
+        transfer.addView(importButton, new LinearLayout.LayoutParams(0, dp(48), 1)); transfer.addView(exportButton, new LinearLayout.LayoutParams(0, dp(48), 1)); content.addView(transfer);
         historyNotice = text("", 12, danger, false); historyNotice.setPadding(dp(12), dp(12), dp(12), dp(12));
         historyNotice.setBackground(shape(tint, 12, 0)); content.addView(historyNotice, spaced(0));
         historyList = vertical(); historyList.setId(R.id.history_list); content.addView(historyList);
-        TextView note = text("相同记录再次识别会置顶，最多保留 10 条。\n验证码在复制时按当前时间生成。", 11, muted, false);
+        TextView note = text("最多保留 10 条，置顶优先保留，到期自动删除。\n密码加密文件包含账号、密码、2FA 链接及历史设置。", 11, muted, false);
         note.setPadding(0, dp(20), 0, dp(10)); note.setGravity(Gravity.CENTER); content.addView(note);
     }
 
     @Override public void changed() {
         if (historyList == null || isDestroyed()) return;
+        ensureCurrentRecord();
         List<HistoryEntry> entries = history.entries();
         replaceOtpButton.setEnabled(data != null && entries.stream().anyMatch(e -> e.id.equals(selectedId)));
         replaceOtpButton.setAlpha(replaceOtpButton.isEnabled() ? 1f : .4f);
@@ -284,11 +302,86 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
                 TextView b = button(labels[kind], tint, accent, 12, null);
                 b.setTag("history-copy-" + kind + ":" + e.account);
                 b.setContentDescription("历史记录 " + e.displayName() + " 复制" + labels[kind]);
-                b.setOnClickListener(v -> copy(kind == 0 ? e.account : kind == 1 ? e.password : kind == 2 ? e.currentCode(Totp.now()) : kind == 4 ? e.secret : e.copyGroup(Totp.now()), labels[kind], b));
+                b.setOnClickListener(v -> {
+                    HistoryEntry current = history.find(e.id);
+                    if (current == null) { changed(); setStatus("记录已到期或被移除。", true); return; }
+                    copy(kind == 0 ? current.account : kind == 1 ? current.password : kind == 2 ? current.currentCode(Totp.now()) : kind == 4 ? current.secret : current.copyGroup(Totp.now()), labels[kind], b);
+                });
                 LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(0, dp(48), 1); if (i < kinds.length - 1) bp.setMarginEnd(dp(6)); buttons.addView(b, bp);
             }
-            card.addView(buttons); historyList.addView(card, spaced(12));
+            card.addView(buttons);
+            TextView manage = button((e.pinned ? "已置顶 · " : "") + (e.expiresAt == 0 ? "永久保留" : "到期 " + new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(new Date(e.expiresAt))) + " · 管理", surface, accent, 12, () -> manageHistory(e.id));
+            manage.setTag("history-manage:" + e.id); card.addView(manage, spaced(6)); historyList.addView(card, spaced(12));
         }
+    }
+
+    private void exportHistory() {
+        if (transferBusy) { setStatus("正在处理文件，请稍候。", false); return; }
+        TransferDialogs.select(this, "选择导出的记录", history.entries(), chosen -> TransferDialogs.password(this, true, password -> {
+            List<HistoryEntry> current = new ArrayList<>();
+            for (HistoryEntry e : chosen) { HistoryEntry found = history.find(e.id); if (found == null) { setStatus("所选记录已到期或被删除，请重新选择。", true); return; } current.add(found); }
+            transferBusy = true; setStatus("正在加密导出…", false);
+            new Thread(() -> {
+                byte[] result = null; String error = null;
+                try { result = HistoryTransfer.encrypt(current, password); } catch (Exception e) { error = "加密导出失败，请确认所选记录尚未到期。"; }
+                final byte[] encrypted = result; final String message = error;
+                runOnUiThread(() -> {
+                    transferBusy = false; if (isDestroyed()) return;
+                    if (message != null) { setStatus(message, true); return; }
+                    pendingExport = encrypted;
+                    startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/octet-stream").putExtra(Intent.EXTRA_TITLE, "账号验证管家-" + new SimpleDateFormat("yyyyMMdd-HHmm", Locale.CHINA).format(new Date()) + ".avmx"), HISTORY_EXPORT);
+                });
+            }, "history-encrypt").start();
+        }));
+    }
+    private void importHistory(android.net.Uri uri, String password) {
+        if (transferBusy) return; transferBusy = true; setStatus("正在解密文件…", false);
+        new Thread(() -> {
+            List<HistoryEntry> result = null; String error = null;
+            try (InputStream in = getContentResolver().openInputStream(uri); ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                if (in == null) throw new IOException("无法读取文件。"); byte[] buffer = new byte[4096]; int count;
+                while ((count = in.read(buffer)) != -1) { if (bytes.size() + count > HistoryTransfer.MAX_BYTES) throw new IOException("文件超过 2 MB。"); bytes.write(buffer, 0, count); }
+                result = HistoryTransfer.decrypt(bytes.toByteArray(), password);
+            } catch (Exception e) { error = e instanceof IOException || e instanceof IllegalArgumentException ? e.getMessage() : "密码错误或文件已损坏。"; }
+            final List<HistoryEntry> decoded = result; final String message = error;
+            runOnUiThread(() -> {
+                transferBusy = false; if (isDestroyed()) return;
+                if (decoded == null) { setStatus(message == null ? "导入失败，请重试。" : message, true); return; }
+                TransferDialogs.select(this, "选择导入的记录", decoded, chosen -> {
+                    try { HistoryModel.importEntries(history.entries(), chosen, System.currentTimeMillis()); }
+                    catch (IllegalArgumentException e) { setStatus(e.getMessage(), true); return; }
+                    int before = history.entries().size();
+                    history.importEntries(chosen, success -> { if (isDestroyed()) return; changed(); setStatus(success ? "已导入 " + Math.max(0, history.entries().size() - before) + " 条；重复或到期记录已跳过。" : "导入失败，现有历史已保留。请检查容量后重试。", !success); });
+                });
+            });
+        }, "history-decrypt").start();
+    }
+
+    private void refreshExpiryButton() {
+        if (expiryButton != null) expiryButton.setText("保存期限：" + (newRetention == null ? "永久" : newRetention.label()) + "（仅首次保存）");
+    }
+    private boolean ensureCurrentRecord() {
+        if (!selectedId.isEmpty() && history.loaded() && history.find(selectedId) == null) {
+            editVersion++; selectedId = ""; resetResult(); input.setText("");
+            if (replacementEditor != null) { replacementEditor.close(); replacementEditor = null; }
+            setStatus("当前记录已到期或被删除，内容已清除。", true); return false;
+        }
+        return true;
+    }
+    private void managementResult(boolean success) {
+        if (isDestroyed()) return;
+        changed(); setStatus(success ? "历史记录已更新。" : "保存失败，原历史已保留。请刷新后重试。", !success);
+    }
+    private void manageHistory(String id) {
+        HistoryEntry e = history.find(id); if (e == null) { changed(); return; }
+        PrivacyProtection.show(new AlertDialog.Builder(this).setTitle(e.displayName())
+                .setItems(new String[]{"管理到期时间", e.pinned ? "取消置顶" : "置顶", "删除记录"}, (dialog, which) -> {
+                    if (which == 0) ExpirationEditor.show(this, null, e.expiresAt, true, value -> history.manage(id, value == null ? 0 : value.expiresAt(System.currentTimeMillis()), null, this::managementResult));
+                    if (which == 1) history.manage(id, null, !e.pinned, this::managementResult);
+                    if (which == 2) PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("删除记录？")
+                            .setMessage("将删除这条记录及其账号、密码和 2FA 密钥。")
+                            .setNegativeButton("取消", null).setPositiveButton("删除", (d, w) -> history.delete(id, this::managementResult)));
+                }).setNegativeButton("取消", null));
     }
 
     private void setMode(boolean auto) {
@@ -391,9 +484,16 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
             showResult(); hideKeyboard();
             setStatus("已识别：" + data.typeDescription() + (data.kind == AccountData.Kind.RECORD ? " · 分隔符 " + preview(data.firstSeparator)
                     + (data.firstSeparator.equals(data.lastSeparator) ? "" : " / " + preview(data.lastSeparator)) : " · " + data.otp.description()), false);
-            history.record(data, automatic, success -> {
+            boolean duplicate = history.entries().stream().anyMatch(e -> HistoryModel.matches(e, data));
+            if (!duplicate) {
+                if (newRetention != null) newRetention.expiresAt(System.currentTimeMillis());
+                if (history.entries().size() >= HistoryModel.LIMIT && history.entries().stream().allMatch(e -> e.pinned)) {
+                    setStatus("解析成功；十条历史均已置顶，请先取消置顶或删除一条再保存。", true); return;
+                }
+            }
+            history.recordWithRetention(data, automatic, newRetention, success -> {
                 if (isDestroyed() || editVersion != version) return;
-                if (success) { selectedId = history.entries().get(0).id; changed(); }
+                if (success) { for (HistoryEntry e : history.entries()) if (HistoryModel.matches(e, data)) { selectedId = e.id; break; } newRetention = null; refreshExpiryButton(); changed(); }
                 else setStatus("解析成功，但历史保存失败。原文件已保留，请前往历史页查看。", true);
             });
         } catch (IllegalArgumentException e) { setStatus(e.getMessage(), true); }
@@ -428,6 +528,24 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     }
     @Override protected void onActivityResult(int request, int result, Intent intent) {
         super.onActivityResult(request, result, intent);
+        if (request == HISTORY_IMPORT) {
+            if (result == RESULT_OK && intent != null && intent.getData() != null) {
+                android.net.Uri uri = intent.getData();
+                TransferDialogs.password(this, false, password -> importHistory(uri, password));
+            } return;
+        }
+        if (request == HISTORY_EXPORT) {
+            byte[] encrypted = pendingExport; pendingExport = null;
+            if (result == RESULT_OK && intent != null && intent.getData() != null && encrypted != null) {
+                android.net.Uri uri = intent.getData(); transferBusy = true;
+                new Thread(() -> {
+                    String error = null;
+                    try (OutputStream out = getContentResolver().openOutputStream(uri, "wt")) { if (out == null) throw new IOException(); out.write(encrypted); out.flush(); }
+                    catch (Exception e) { error = "导出文件写入失败，请重试。"; }
+                    final String message = error; runOnUiThread(() -> { transferBusy = false; if (!isDestroyed()) setStatus(message == null ? "加密文件已导出。" : message, message != null); });
+                }, "history-export-write").start();
+            } return;
+        }
         if (request == QR_REPLACE) {
             if (replacementEditor == null || intent == null) return;
             if (result == RESULT_OK) {
@@ -448,6 +566,8 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         }
     }
     private void restore(HistoryEntry e) {
+        e = history.find(e.id);
+        if (e == null) { changed(); setStatus("记录已到期或被移除。", true); return; }
         editVersion++; resetResult(); suppress = true; automatic = e.automatic;
         if (e.kind == AccountData.Kind.RECORD) separator.setText(e.firstSeparator);
         input.setText(e.originalText()); suppress = false;
@@ -468,7 +588,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     }
     private void confirmClearHistory() {
         PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("清空全部历史记录？")
-                .setMessage("将删除本机保存的全部历史。当前页面的解析结果会保留。")
+                .setMessage("将删除本机保存的全部历史，并清除已恢复的当前记录。")
                 .setNegativeButton("取消", null).setPositiveButton("清空历史", (dialog, which) -> history.clear(success -> {
                     if (isDestroyed()) return;
                     if (success) { selectedId = ""; changed(); setStatus("历史记录已清空", false); }
@@ -496,12 +616,12 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         getSystemService(InputMethodManager.class).hideSoftInputFromWindow(input.getWindowToken(), 0); input.clearFocus(); separator.clearFocus();
     }
     private static String preview(String s) { String value = s.replace("\t", "\\t"); return "「" + (value.length() > 12 ? value.substring(0, 12) + "…" : value) + "」"; }
-    @Override protected void onStart() { super.onStart(); history.listen(this); changed(); timer.post(tick); }
+    @Override protected void onStart() { super.onStart(); history.listen(this); history.load(); changed(); timer.post(tick); }
     @Override protected void onStop() { timer.removeCallbacksAndMessages(null); history.unlisten(this); passwordVisible = false; renderPassword(); super.onStop(); }
     @Override protected void onDestroy() { if (replacementEditor != null) replacementEditor.close(); if (data != null) data.close(); super.onDestroy(); }
     @Override protected void onSaveInstanceState(Bundle out) { out.putBoolean("history", historyVisible); super.onSaveInstanceState(out); }
     @Override public Object onRetainNonConfigurationInstance() {
-        Session s = new Session(); s.input = input.getText().toString(); s.separator = separator.getText().toString(); s.auto = automatic; s.history = historyVisible; s.selected = selectedId;
+        Session s = new Session(); s.input = input.getText().toString(); s.separator = separator.getText().toString(); s.auto = automatic; s.history = historyVisible; s.selected = selectedId; s.newRetention = newRetention; s.pendingExport = pendingExport;
         if (data != null) s.result = HistoryEntry.fromData("", data, automatic, 0);
         if (replacementEditor != null) s.replacement = replacementEditor.retainedDraft();
         return s;
@@ -510,7 +630,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private interface Value { String get(); }
     private TextView resultButton(String title, int id, Value value, String label, int fill, int foreground) {
         TextView b = button(title, fill, foreground, 13, null); b.setId(id);
-        b.setOnClickListener(v -> { if (data != null) { updateCode(); copy(value.get(), label, b); } }); resultButtons.add(b); return b;
+        b.setOnClickListener(v -> { if (data != null && ensureCurrentRecord()) { updateCode(); if (data != null) copy(value.get(), label, b); } }); resultButtons.add(b); return b;
     }
     private TextView navItem(String title, String icon, int id, boolean history) {
         TextView b = button(title, surface, muted, 14, () -> switchPage(history)); b.setId(id); return b;

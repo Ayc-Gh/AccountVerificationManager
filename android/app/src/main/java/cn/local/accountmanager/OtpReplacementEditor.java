@@ -26,6 +26,7 @@ public final class OtpReplacementEditor {
     }
     final AlertDialog dialog;
     private final Activity activity;
+    private final HistoryRepository history;
     private final Draft draft;
     private final AccountData original;
     private AccountData preview;
@@ -39,7 +40,7 @@ public final class OtpReplacementEditor {
     private final Runnable tick = new Runnable() { public void run() { if (!closed) { updateCode(); timer.postDelayed(this, 200); } } };
 
     public OtpReplacementEditor(Activity activity, Draft draft, HistoryRepository history, Consumer<String> qr, Runnable updated) {
-        this.activity = activity; this.draft = draft; original = draft.expected.open();
+        this.history = history; this.activity = activity; this.draft = draft; original = draft.expected.open();
         LinearLayout content = new LinearLayout(activity); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(24), dp(8), dp(24), dp(12));
         TextView identity = text(draft.expected.displayName(), 15); identity.setMaxLines(2); content.addView(identity);
         content.addView(text("保留账号、密码、名称和列表位置", 12));
@@ -104,7 +105,7 @@ public final class OtpReplacementEditor {
         } catch (IllegalArgumentException error) { error(error.getMessage()); }
         copyNew.setEnabled(preview != null); dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(preview != null && !draft.saving);
     }
-    private void updateCode() { if (preview != null) { String value = preview.code(Totp.now()); code.setText(value.substring(0, value.length()/2) + " " + value.substring(value.length()/2)); } }
+    private void updateCode() { if (!validRecord()) { close(); return; } if (preview != null) { String value = preview.code(Totp.now()); code.setText(value.substring(0, value.length()/2) + " " + value.substring(value.length()/2)); } }
     public void acceptQr(String text) { if (!closed && !draft.saving) input.setText(text); }
     public void error(String text) { if (!closed) { feedback.setText(text); feedback.setTextColor(Color.rgb(197,64,77)); } }
     public Draft snapshot() { return closed || draft.discarded || !dialog.isShowing() ? null : draft; }
@@ -114,7 +115,12 @@ public final class OtpReplacementEditor {
         if (draft.completion == completion) draft.completion = null;
         if (preview != null) preview.close(); original.close(); if (dialog.isShowing()) dialog.dismiss();
     }
+    private boolean validRecord() {
+        HistoryEntry current = history.find(draft.expected.id);
+        return current != null && current.originalText().equals(draft.expected.originalText());
+    }
     private void copy(String value) {
+        if (!validRecord()) { close(); return; }
         ClipData clip = ClipData.newPlainText("账号验证管家", value); PersistableBundle extras = new PersistableBundle(); extras.putBoolean("android.content.extra.IS_SENSITIVE", true); clip.getDescription().setExtras(extras);
         try { activity.getSystemService(ClipboardManager.class).setPrimaryClip(clip); feedback.setText("验证码已复制"); feedback.setTextColor(normalColor); }
         catch (SecurityException error) { error("复制失败，请重试。"); }

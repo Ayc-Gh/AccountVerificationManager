@@ -38,18 +38,33 @@ public final class EncryptedHistoryStore {
         }
         SecretKey key = key(false);
         byte[] plain = HistoryCipher.decrypt(encrypted, key);
-        try { return HistoryCodec.decode(plain); }
+        try {
+            List<HistoryEntry> old = HistoryCodec.decode(plain);
+            List<HistoryEntry> next = HistoryModel.active(old, System.currentTimeMillis());
+            if (next.size() != old.size()) write(next);
+            return next;
+        }
         finally { Arrays.fill(plain, (byte) 0); }
     }
 
     public synchronized List<HistoryEntry> record(AccountData data, boolean automatic) throws IOException, GeneralSecurityException {
+        return record(data, automatic, 0);
+    }
+    public synchronized List<HistoryEntry> record(AccountData data, boolean automatic, long expires) throws IOException, GeneralSecurityException {
         // Re-read before every write; a damaged or unreadable file is never overwritten implicitly.
-        List<HistoryEntry> next = HistoryModel.record(load(), data, automatic, System.currentTimeMillis());
+        List<HistoryEntry> next = HistoryModel.record(load(), data, automatic, System.currentTimeMillis(), expires);
         write(next); return next;
     }
 
     public synchronized List<HistoryEntry> clear() throws IOException, GeneralSecurityException {
         List<HistoryEntry> next = new ArrayList<>();
+        write(next); return next;
+    }
+    public synchronized List<HistoryEntry> recordWithRetention(AccountData data, boolean automatic, RetentionPeriod period) throws IOException, GeneralSecurityException {
+        List<HistoryEntry> current = load(); long now = System.currentTimeMillis();
+        boolean duplicate = current.stream().anyMatch(e -> HistoryModel.matches(e, data));
+        long expires = period == null || duplicate ? 0 : period.expiresAt(now);
+        List<HistoryEntry> next = HistoryModel.record(current, data, automatic, now, expires);
         write(next); return next;
     }
 
@@ -63,6 +78,15 @@ public final class EncryptedHistoryStore {
         write(next); return next;
     }
 
+    public synchronized List<HistoryEntry> delete(String id) throws IOException, GeneralSecurityException {
+        List<HistoryEntry> next = HistoryModel.delete(load(), id, System.currentTimeMillis()); write(next); return next;
+    }
+    public synchronized List<HistoryEntry> manage(String id, Long expires, Boolean pinned) throws IOException, GeneralSecurityException {
+        List<HistoryEntry> next = HistoryModel.manage(load(), id, expires, pinned, System.currentTimeMillis()); write(next); return next;
+    }
+    public synchronized List<HistoryEntry> importEntries(List<HistoryEntry> incoming) throws IOException, GeneralSecurityException {
+        List<HistoryEntry> next = HistoryModel.importEntries(load(), incoming, System.currentTimeMillis()); write(next); return next;
+    }
     private void write(List<HistoryEntry> entries) throws IOException, GeneralSecurityException {
         byte[] plain = HistoryCodec.encode(entries), encrypted;
         try { encrypted = HistoryCipher.encrypt(plain, key(true)); }

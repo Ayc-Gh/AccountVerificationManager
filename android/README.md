@@ -1,8 +1,8 @@
 # 账号验证管家 Android
 
-账号验证管家的 Android 原生应用。v1.8.0 提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
+账号验证管家的 Android 原生应用。当前版本 1.9.2 支持“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
 
-[Android v1.8.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.8.0/AccountVerificationManager-android-v1.8.0.apk) · [Windows v1.8.0](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.8.0/AccountVerificationManager-v1.8.0-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
+[Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) · [Windows v1.9.2](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
 
 支持 Android 8.0 及以上，无网络权限，二维码解码使用内置 ZXing，拍照文件使用 AndroidX FileProvider。界面支持系统深色模式。
 
@@ -18,7 +18,7 @@
 
 点击“拍照识别二维码”调用系统相机，确认照片后识别；点击“上传二维码图片”从系统文件选择器选择图片。图像在本机解码，支持纯密钥与标准 TOTP URI，保留算法、位数和周期。同图多个有效二维码可选择一条。取消不会改动当前结果，失败会使旧复制按钮失效。已恢复防截图、录屏及最近任务预览保护，复制内容使用敏感标记隐藏系统预览。
 
-两端当前版本统一为 1.8.0；Android versionCode 为 10800。发行标签为 `android-v1.8.0`。本轮新增便捷更换 2FA，保留账号、密码和历史名称。
+两端本地版本统一为 1.9.0；Android versionCode 为 10900，保留原签名。1.9.0 尚未发布 GitHub，详情见 [历史管理与加密导入导出](../docs/v1.9.0历史管理与加密导入导出.md)。
 
 ## 历史命名
 
@@ -61,7 +61,7 @@ Windows PowerShell 7、JDK 21、Android SDK platform 37 和 build-tools 37.0.0�
 .\build.ps1 -Offline
 ```
 
-脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前为 `release/账号验证管家-v1.8.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
+脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前为 `release/账号验证管家-v1.9.2.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
 
 ## 真实设备测试
 

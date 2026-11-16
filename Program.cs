@@ -44,6 +44,7 @@ namespace AccountSplit2FA
         private long lastStep = -1;
         private DateTime statusUntil;
         private readonly HistoryStore history;
+        private readonly DeferredContextMenu managementMenu;
         private TableLayoutPanel shell;
         private TableLayoutPanel mainPage;
         private Panel contentHost;
@@ -53,7 +54,11 @@ namespace AccountSplit2FA
         private Label historyStatus;
         private ActionButton historyToggle, clearHistory;
         private ActionButton qrUpload;
-        private ActionButton replaceOtp;
+        private ActionButton replaceOtp, expiryButton;
+        private bool transferBusy;
+        private RetentionPeriod newRetention;
+        private DateTime nextHistoryRefresh;
+        private string historyStamp = "";
         private long qrImportVersion;
         private Guid selectedHistory = Guid.Empty;
         private bool historyExpanded;
@@ -64,7 +69,7 @@ namespace AccountSplit2FA
         public MainForm(string historyFile)
         {
             history = new HistoryStore(historyFile);
-            Text = "账号验证管家 v1.8.0";
+            Text = "账号验证管家 v1.9.2";
             ClientSize = new Size(860, 660);
             MinimumSize = new Size(780, 660);
             StartPosition = FormStartPosition.CenterScreen; BackColor = Theme.Background;
@@ -96,13 +101,14 @@ namespace AccountSplit2FA
             timer = new Timer { Interval = 200 };
             timer.Tick += delegate {
                 placeholder.Visible = input.TextLength == 0;
-                UpdateCode();
+                SynchronizeHistory(); UpdateCode();
                 if (transientStatus && DateTime.UtcNow > statusUntil) SetIdleStatus();
             };
             ResetResult(); SetIdleStatus();
             try { history.Load(); } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史记录无法读取，原文件已保留。可清空历史后重试。", true); }
             RefreshHistory(); timer.Start();
             FormClosed += delegate { timer.Stop(); timer.Dispose(); ResetResult(); input.Clear(); };
+            managementMenu = new DeferredContextMenu(this);
         }
         private Control CreateHeader()
         {
@@ -130,8 +136,10 @@ namespace AccountSplit2FA
             TableLayoutPanel heading = Table(2, 1); heading.Dock = DockStyle.Fill;
             heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
             heading.Controls.Add(Label("智能识别解析", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
-            Label hint = Label("账号记录 / 密钥 / URI", 9, FontStyle.Regular, Theme.Muted); hint.TextAlign = ContentAlignment.MiddleRight;
-            heading.Controls.Add(hint, 1, 0); content.Controls.Add(heading, 0, 0);
+            expiryButton = Button("保存期限：永久", ButtonKind.Ghost, 190); expiryButton.Dock = DockStyle.Fill;
+            expiryButton.Font = Theme.Font(8.5F, FontStyle.Regular); expiryButton.AccessibleName = "首次保存的到期时间";
+            expiryButton.Click += delegate { using (ExpirationDialog dialog = new ExpirationDialog(newRetention, null, false, delegate(RetentionPeriod value) { newRetention = value; RefreshExpiryButton(); })) dialog.ShowDialog(this); };
+            heading.Controls.Add(expiryButton, 1, 0); content.Controls.Add(heading, 0, 0);
             TableLayoutPanel options = Table(3, 1); options.Dock = DockStyle.Fill;
             options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240)); options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
             options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -346,9 +354,10 @@ namespace AccountSplit2FA
                 string kind = data.InputKind == InputKind.Secret ? "纯 2FA 密钥" : data.InputKind == InputKind.AuthenticatorUri ? "Authenticator URI" : data.UsesUri ? "账号记录 + Authenticator URI" : "账号记录";
                 SetStatus("已识别 " + kind + (data.InputKind == InputKind.Record ? " · 分隔符 " + SeparatorPreview(data.FirstSeparator) + (data.FirstSeparator == data.LastSeparator ? "" : " / " + SeparatorPreview(data.LastSeparator)) : ""), false);
                 try {
-                    history.Record(data, automatic); selectedHistory = history.Entries[0].Id; replaceOtp.Enabled = true; RefreshHistory();
+                    HistoryEntry saved = history.RecordWithRetention(data, automatic, newRetention); selectedHistory = saved.Id; newRetention = null; RefreshExpiryButton(); replaceOtp.Enabled = true; RefreshHistory();
                     nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
-                } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("解析成功，但历史记录保存失败；请检查本机历史文件。", true); }
+                } catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+                catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus(error is FormatException ? error.Message : "解析成功，但历史记录保存失败；请检查本机历史文件。", true); }
             } catch (FormatException error) { SetStatus(error.Message, true); }
         }
         private static string SeparatorPreview(string value) { value = value.Replace("\t", "\\t"); return "「" + (value.Length > 12 ? value.Substring(0, 12) + "…" : value) + "」"; }
@@ -359,7 +368,7 @@ namespace AccountSplit2FA
             secretCopy.Enabled = codeCopy.Enabled = allCopy.Enabled = enabled;
             replaceOtp.Enabled = enabled && selectedHistory != Guid.Empty;
         }
-        private void ClearInput() { qrImportVersion++; input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
+        private void ClearInput() { selectedHistory = Guid.Empty; newRetention = null; RefreshExpiryButton(); qrImportVersion++; input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
         private void ResetResult()
         {
             if (data != null) { data.Dispose(); data = null; } lastStep = -1;
@@ -381,6 +390,7 @@ namespace AccountSplit2FA
         }
         private void Copy(string value, string label, ActionButton button)
         {
+            if (!EnsureCurrentRecord()) return;
             try { Clipboard.SetText(value, TextDataFormat.UnicodeText); button.ShowCopied(); SetStatus(label + "已复制", false); }
             catch (ExternalException) { SetStatus("剪贴板正被其他程序占用，请重新点击复制。", true); }
         }
@@ -448,7 +458,12 @@ namespace AccountSplit2FA
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            layout.Controls.Add(Label("最近识别", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
+            TableLayoutPanel heading = Table(3, 1); heading.Dock = DockStyle.Fill;
+            heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+            heading.Controls.Add(Label("历史记录管理", 12.5F, FontStyle.Bold, Theme.Ink), 0, 0);
+            ActionButton import = Button("加密导入", ButtonKind.Ghost, 104), export = Button("多选导出", ButtonKind.Ghost, 104);
+            import.Click += delegate { ImportHistory(); }; export.Click += delegate { ExportHistory(); };
+            heading.Controls.Add(import, 1, 0); heading.Controls.Add(export, 2, 0); layout.Controls.Add(heading, 0, 0);
             historyCount = Label("0 / 10 条 · 点击记录恢复", 8.5F, FontStyle.Regular, Theme.Muted);
             layout.Controls.Add(historyCount, 0, 1);
             historyList = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true,
@@ -459,9 +474,9 @@ namespace AccountSplit2FA
             layout.Controls.Add(historyStatus, 0, 3);
             clearHistory = Button("清空历史记录", ButtonKind.Ghost, 180); clearHistory.Dock = DockStyle.Fill;
             clearHistory.Click += delegate {
-                if (MessageBox.Show(this, "清空所有历史记录？当前窗口中的识别结果会保留。", "账号验证管家",
+                if (MessageBox.Show(this, "清空所有历史记录？已恢复的当前记录也会清除。", "账号验证管家",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                try { history.Clear(); selectedHistory = Guid.Empty; RefreshHistory(); SetStatus("历史记录已清空", false); }
+                try { history.Clear(); if (selectedHistory != Guid.Empty) InvalidateSavedResult(); RefreshHistory(); SetStatus("历史记录已清空", false); }
                 catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法清空历史记录，请检查文件是否可写。", true); }
             };
             layout.Controls.Add(clearHistory, 0, 4); card.Controls.Add(layout); return card;
@@ -518,14 +533,15 @@ namespace AccountSplit2FA
         private Control CreateHistoryItem(HistoryEntry entry)
         {
             bool named = entry.Name.Length > 0;
-            Card card = new Card { Height = named ? 126 : 104, Padding = new Padding(6), Margin = new Padding(0, 0, 0, 8), Radius = 9,
+            Card card = new Card { Height = named ? 158 : 136, Padding = new Padding(6), Margin = new Padding(0, 0, 0, 8), Radius = 9,
                 BorderColor = entry.Id == selectedHistory ? Color.FromArgb(139, 168, 250) : Theme.Line };
             card.Tag = entry.Id;
-            TableLayoutPanel content = Table(1, named ? 4 : 3); content.Dock = DockStyle.Fill;
+            TableLayoutPanel content = Table(1, named ? 5 : 4); content.Dock = DockStyle.Fill;
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             if (named) content.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             TableLayoutPanel heading = Table(2, 1); heading.Dock = DockStyle.Fill;
             heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
             ActionButton open = Button(entry.DisplayName, ButtonKind.Ghost, 200); open.Dock = DockStyle.Fill; open.AlignLeft = true;
@@ -552,8 +568,117 @@ namespace AccountSplit2FA
                 copy.Click += delegate { CopyHistory(entry.Id, kind, captions[kind], copy); };
                 actions.Controls.Add(copy, i, 0);
             }
-            content.Controls.Add(actions, 0, row); card.Click += delegate { RestoreHistory(entry); };
+            content.Controls.Add(actions, 0, row++);
+            ActionButton manage = Button((entry.Pinned ? "已置顶 · " : "") + (entry.ExpiresAtUtc.HasValue ? "到期 " + entry.ExpiresAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "永久保留") + "  ·  管理", ButtonKind.Ghost, 300);
+            manage.Dock = DockStyle.Fill; manage.Font = Theme.Font(8, FontStyle.Regular); manage.AlignLeft = true;
+            manage.AccessibleName = "管理历史记录 " + entry.DisplayName;
+            manage.Click += delegate { PromptManagement(entry.Id, manage); }; content.Controls.Add(manage, 0, row);
+            card.Click += delegate { RestoreHistory(entry); };
             card.Controls.Add(content); return card;
+        }
+
+        private void TransferError(Exception error)
+        {
+            SetStatus(error is FormatException || error is InvalidOperationException ? error.Message : "文件操作失败，请检查文件或存储位置后重试。", true);
+        }
+        private void ExportHistory()
+        {
+            if (transferBusy) { SetStatus("正在处理文件，请稍候。", false); return; }
+            try {
+                history.Load(); List<HistoryEntry> selected;
+                using (TransferSelectionDialog selection = new TransferSelectionDialog("选择导出的历史记录", history.Entries)) { if (selection.ShowDialog(this) != DialogResult.OK) return; selected = selection.Selected; }
+                string password;
+                using (TransferPasswordDialog prompt = new TransferPasswordDialog(true)) { if (prompt.ShowDialog(this) != DialogResult.OK) return; password = prompt.Password; }
+                string path;
+                using (SaveFileDialog picker = new SaveFileDialog { Title = "保存加密历史文件", Filter = "加密历史文件|*.avmx", FileName = "账号验证管家-" + DateTime.Now.ToString("yyyyMMdd-HHmm") + ".avmx", DefaultExt = "avmx" }) { if (picker.ShowDialog(this) != DialogResult.OK) return; path = picker.FileName; }
+                // Re-read the chosen IDs after modal interaction; deleted or expired records cannot be exported.
+                for (int i = 0; i < selected.Count; i++) { selected[i] = history.Find(selected[i].Id); if (selected[i] == null) throw new FormatException("所选记录已到期或被删除，请重新选择。"); }
+                transferBusy = true; SetStatus("正在加密导出…", false);
+                Task.Factory.StartNew(delegate {
+                    byte[] encrypted = HistoryTransfer.Encrypt(selected, password); string temporary = path + ".tmp." + Guid.NewGuid().ToString("N");
+                    try { File.WriteAllBytes(temporary, encrypted); if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path); }
+                    finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                }).ContinueWith(task => { transferBusy = false; if (IsDisposed) return; if (task.IsFaulted) TransferError(task.Exception.GetBaseException()); else SetStatus("已导出 " + selected.Count + " 条记录到密码加密文件。", false); }, TaskScheduler.FromCurrentSynchronizationContext());
+            } catch (Exception error) { if (!HistoryFailure(error) && !(error is InvalidOperationException)) throw; TransferError(error); }
+        }
+        private void ImportHistory()
+        {
+            if (transferBusy) { SetStatus("正在处理文件，请稍候。", false); return; }
+            string path, password;
+            using (OpenFileDialog picker = new OpenFileDialog { Title = "选择加密历史文件", Filter = "加密历史文件|*.avmx" }) { if (picker.ShowDialog(this) != DialogResult.OK) return; path = picker.FileName; }
+            using (TransferPasswordDialog prompt = new TransferPasswordDialog(false)) { if (prompt.ShowDialog(this) != DialogResult.OK) return; password = prompt.Password; }
+            transferBusy = true; SetStatus("正在解密文件…", false);
+            Task.Factory.StartNew(delegate {
+                using (FileStream file = File.OpenRead(path)) { if (file.Length > HistoryTransfer.MaxBytes) throw new FormatException("导入文件超过 2 MB。"); byte[] bytes = new byte[(int)file.Length]; int offset = 0, read; while (offset < bytes.Length && (read = file.Read(bytes, offset, bytes.Length - offset)) > 0) offset += read; if (offset != bytes.Length) throw new FormatException("文件内容不完整。"); return HistoryTransfer.Decrypt(bytes, password); }
+            }).ContinueWith(task => {
+                transferBusy = false; if (IsDisposed) return;
+                if (task.IsFaulted) { TransferError(task.Exception.GetBaseException()); return; }
+                using (TransferSelectionDialog selection = new TransferSelectionDialog("选择导入的记录", task.Result)) {
+                    if (selection.ShowDialog(this) != DialogResult.OK) return;
+                    try { int added = history.Import(selection.Selected); SynchronizeHistory(true); SetStatus("已导入 " + added + " 条；重复或已到期记录已跳过。", false); }
+                    catch (Exception error) { if (!HistoryFailure(error) && !(error is InvalidOperationException)) throw; TransferError(error); }
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        private void RefreshExpiryButton()
+        {
+            if (expiryButton != null) expiryButton.Text = "保存期限：" + (newRetention == null ? "永久" : newRetention.Label);
+        }
+        private bool EnsureCurrentRecord()
+        {
+            if (data == null || selectedHistory == Guid.Empty) return true;
+            try {
+                if (history.Find(selectedHistory) != null) return true;
+                InvalidateSavedResult(); return false;
+            } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法确认历史状态，请重试。", true); return false; }
+        }
+        private void InvalidateSavedResult()
+        {
+            selectedHistory = Guid.Empty; ResetResult(); input.Clear();
+            foreach (Form dialog in OwnedForms) if (dialog is OtpReplaceDialog) dialog.Close();
+            SetStatus("当前记录已到期或被删除，内容已清除。", true);
+        }
+        private void SynchronizeHistory() { SynchronizeHistory(false); }
+        private void SynchronizeHistory(bool force)
+        {
+            if (!force && DateTime.UtcNow < nextHistoryRefresh) return;
+            nextHistoryRefresh = DateTime.UtcNow.AddSeconds(1);
+            try {
+                history.Load();
+                bool selectedExists = false; foreach (HistoryEntry e in history.Entries) if (e.Id == selectedHistory) selectedExists = true;
+                if (selectedHistory != Guid.Empty && data != null && !selectedExists) InvalidateSavedResult();
+                string stamp = "";
+                foreach (HistoryEntry e in history.Entries) stamp += e.Id + ":" + e.Name + ":" + e.ExpiresAtUtc + ":" + e.Pinned + ":" + e.RecognizedAtUtc.Ticks + ":" + e.Counter + ";";
+                if (force || stamp != historyStamp) { historyStamp = stamp; RefreshHistory(); }
+            } catch (Exception error) {
+                if (!HistoryFailure(error)) throw;
+                foreach (HistoryEntry e in history.Entries) if (e.Id == selectedHistory && e.IsExpired(DateTime.UtcNow)) { InvalidateSavedResult(); break; }
+                SetStatus("历史清理失败，原文件已保留。", true);
+            }
+        }
+        private void ManageHistory(Action action)
+        {
+            try { action(); SynchronizeHistory(true); }
+            catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+            catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("保存失败，原历史文件已保留。", true); }
+        }
+        private void PromptManagement(Guid id, Control anchor)
+        {
+            try {
+                HistoryEntry entry = history.Find(id);
+                if (entry == null) { SynchronizeHistory(true); return; }
+                DeferredContextMenu menu = managementMenu; menu.ResetActions();
+                menu.AddAction("管理到期时间", delegate {
+                    using (ExpirationDialog dialog = new ExpirationDialog(null, entry.ExpiresAtUtc, true, delegate(RetentionPeriod value) { history.SetExpiration(id, value == null ? (DateTime?)null : value.ExpiresAt(DateTime.UtcNow)); SynchronizeHistory(true); })) dialog.ShowDialog(this);
+                });
+                menu.AddAction(entry.Pinned ? "取消置顶" : "置顶", delegate { ManageHistory(delegate { history.SetPinned(id, !entry.Pinned); }); });
+                menu.AddAction("删除记录", delegate {
+                    if (MessageBox.Show(this, "删除这条记录及其账号、密码和 2FA 密钥？", "删除记录", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) == DialogResult.OK)
+                        ManageHistory(delegate { history.Delete(id); });
+                });
+                menu.Show(anchor, new Point(0, anchor.Height));
+            } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史读取失败，请重试。", true); }
         }
 
         private void PromptReplaceOtp()
@@ -564,7 +689,7 @@ namespace AccountSplit2FA
                 using (OtpReplaceDialog dialog = new OtpReplaceDialog(entry, delegate(string text) {
                     HistoryEntry updated = history.ReplaceOtp(entry, text); RestoreHistory(updated);
                     SetStatus("2FA 已更换，账号、密码和名称已保留。", false);
-                })) dialog.ShowDialog(this);
+                }, delegate { try { HistoryEntry current = history.Find(entry.Id); return current != null && current.OriginalText() == entry.OriginalText(); } catch (Exception error) { if (!HistoryFailure(error)) throw; return false; } })) dialog.ShowDialog(this);
             } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史记录无法读取，原文件已保留。", true); }
         }
 
@@ -586,6 +711,9 @@ namespace AccountSplit2FA
 
         private void RestoreHistory(HistoryEntry entry)
         {
+            try { entry = history.Find(entry.Id); }
+            catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史读取失败，原文件已保留。", true); return; }
+            if (entry == null) { SynchronizeHistory(true); SetStatus("记录已到期或被移除。", true); return; }
             if (historyExpanded) SetHistoryPage(false);
             ResetResult(); SetSeparatorMode(entry.Automatic);
             if (!entry.Automatic) manualSeparator.Text = entry.FirstSeparator;
@@ -624,11 +752,81 @@ namespace AccountSplit2FA
                 if (current == null) throw new InvalidOperationException("历史记录已更新，请重新展开历史面板。");
                 string value = kind == 0 ? current.Account : kind == 1 ? current.Password :
                     kind == 2 ? current.CurrentCode(Totp.UnixNow()) : current.CopyGroup(Totp.UnixNow());
-                Copy(value, "历史" + caption, button);
+                Clipboard.SetText(value, TextDataFormat.UnicodeText); button.ShowCopied(); SetStatus("历史" + caption + "已复制", false);
             }
+            catch (ExternalException) { SetStatus("剪贴板暂时不可用，请重试。", true); }
             catch (InvalidOperationException error) { SetStatus(error.Message, true); }
             catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取历史记录，请稍后重试。", true); }
         }
+    }
+    // A dropdown still performs handle/owner bookkeeping after Closed is raised.
+    // Keep it alive until its form is disposed; run actions after the click unwinds,
+    // so modal dialogs and history-row replacement cannot interrupt that bookkeeping.
+    internal sealed class DeferredContextMenu : ContextMenuStrip
+    {
+        private readonly Form owner;
+        public DeferredContextMenu(Form owner) { this.owner = owner; owner.Disposed += OwnerDisposed; }
+        private void OwnerDisposed(object sender, EventArgs e) { Dispose(); }
+        public void ResetActions()
+        {
+            if (Visible) Close();
+            while (Items.Count > 0) { ToolStripItem item = Items[0]; Items.RemoveAt(0); item.Dispose(); }
+        }
+        public void AddAction(string label, Action action)
+        {
+            Items.Add(label, null, delegate {
+                if (owner.IsDisposed || owner.Disposing || !owner.IsHandleCreated) return;
+                owner.BeginInvoke((Action)delegate {
+                    if (!owner.IsDisposed && !owner.Disposing) action();
+                });
+            });
+        }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) owner.Disposed -= OwnerDisposed;
+            base.Dispose(disposing);
+        }
+    }
+    internal sealed class ExpirationDialog : Form
+    {
+        private readonly CheckBox enabled;
+        private readonly TextBox amount;
+        private readonly ComboBox unit;
+        private readonly Label feedback;
+        private readonly Action<RetentionPeriod> commit;
+        private const string Help = "不勾选表示永久保留。1天=24时，1周=7天，1月=30天。\n到期自动删除；关闭期间到期，下次启动清理。";
+        public ExpirationDialog(RetentionPeriod current, DateTime? existing, bool managing, Action<RetentionPeriod> commit)
+        {
+            this.commit = commit; Text = managing ? "管理到期时间" : "保存期限"; ClientSize = new Size(450, 310); Font = Theme.Font(10, FontStyle.Regular);
+            AutoScaleDimensions = new SizeF(96, 96); AutoScaleMode = AutoScaleMode.Dpi;
+            BackColor = Theme.Background; StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = MinimizeBox = false;
+            Label note = new Label { Text = managing ? "当前到期：" + (existing.HasValue ? existing.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "永久保留") + "\n保存后从现在起按新期限重新计时。" : "输入数字并选择单位，如 30 分、2 时、7 天。\n首次保存成功时开始计时，重复解析保留原期限。", Bounds = new Rectangle(24, 20, 402, 68), ForeColor = Theme.Muted };
+            enabled = new CheckBox { Text = "设置保存期限", Bounds = new Rectangle(24, 94, 390, 28), Checked = current != null || existing.HasValue };
+            amount = new TextBox { Text = current == null ? "1" : current.Amount.ToString(), MaxLength = 32, AccessibleName = "保存期限数字", Bounds = new Rectangle(24, 134, 266, 30) };
+            unit = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "保存期限单位", Bounds = new Rectangle(306, 134, 120, 30) };
+            unit.Items.AddRange(new object[] { "分", "时", "天", "周", "月" }); unit.SelectedIndex = current == null ? 2 : current.Unit;
+            amount.Enabled = unit.Enabled = enabled.Checked;
+            feedback = new Label { Text = Help, Bounds = new Rectangle(24, 183, 402, 60), ForeColor = Theme.Muted };
+            enabled.CheckedChanged += delegate { amount.Enabled = unit.Enabled = enabled.Checked; ResetFeedback(); if (enabled.Checked) { amount.Focus(); amount.SelectAll(); } };
+            amount.TextChanged += delegate { ResetFeedback(); }; unit.SelectedIndexChanged += delegate { ResetFeedback(); };
+            ActionButton save = new ActionButton { Text = "保存", AccessibleName = "保存到期时间", Kind = ButtonKind.Primary, Bounds = new Rectangle(308, 254, 118, 36) };
+            ActionButton cancel = new ActionButton { Text = "取消", Kind = ButtonKind.Ghost, Bounds = new Rectangle(182, 254, 118, 36) };
+            save.Click += delegate { Save(); }; cancel.Click += delegate { DialogResult = DialogResult.Cancel; Close(); };
+            Controls.AddRange(new Control[] { note, enabled, amount, unit, feedback, save, cancel });
+            Shown += delegate { if (enabled.Checked) { amount.Focus(); amount.SelectAll(); } };
+        }
+        private void ResetFeedback() { feedback.Text = Help; feedback.ForeColor = Theme.Muted; }
+        private void Save()
+        {
+            try {
+                RetentionPeriod value = enabled.Checked ? RetentionPeriod.Parse(amount.Text, unit.SelectedIndex) : null;
+                if (value != null) value.ExpiresAt(DateTime.UtcNow);
+                commit(value); DialogResult = DialogResult.OK; Close();
+            } catch (InvalidOperationException error) { feedback.Text = error.Message; feedback.ForeColor = Color.Firebrick; }
+            catch (Exception error) { if (!MainForm.HistoryFailure(error)) throw; feedback.Text = error is FormatException ? error.Message : "保存失败，原记录已保留，请重试。"; feedback.ForeColor = Color.Firebrick; }
+        }
+        protected override bool ProcessDialogKey(Keys key) { if (key == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); return true; } if (key == Keys.Enter) { Save(); return true; } return base.ProcessDialogKey(key); }
     }
     internal sealed class HistoryNameDialog : Form
     {

@@ -11,14 +11,14 @@ public final class HistoryCodec {
         if (entries.size() > HistoryModel.LIMIT) throw new IOException("历史记录数量异常。");
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream out = new DataOutputStream(bytes)) {
-            out.writeInt(0x41564D48); out.writeInt(3); out.writeInt(entries.size());
+            out.writeInt(0x41564D48); out.writeInt(4); out.writeInt(entries.size());
             for (HistoryEntry e : entries) {
                 writeText(out, e.id); writeText(out, e.account); writeText(out, e.password); writeText(out, e.secret);
                 writeText(out, e.firstSeparator); writeText(out, e.lastSeparator);
                 out.writeBoolean(e.automatic); out.writeLong(e.recognizedAt);
                 writeText(out, e.kind.name()); writeText(out, e.issuer); writeText(out, e.otp.algorithm);
                 out.writeInt(e.otp.digits); out.writeInt(e.otp.period);
-                writeText(out, e.name);
+                writeText(out, e.name); out.writeLong(e.expiresAt); out.writeBoolean(e.pinned);
             }
         }
         if (bytes.size() > MAX_BYTES) throw new IOException("历史记录内容过大。");
@@ -29,7 +29,7 @@ public final class HistoryCodec {
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             if (in.readInt() != 0x41564D48) throw new IOException("历史记录格式无效。");
             int version = in.readInt();
-            if (version < 1 || version > 3) throw new IOException("历史记录版本不兼容。");
+            if (version < 1 || version > 4) throw new IOException("历史记录版本不兼容。");
             int count = in.readInt();
             if (count < 0 || count > HistoryModel.LIMIT) throw new IOException("历史记录数量异常。");
             List<HistoryEntry> result = new ArrayList<>();
@@ -44,8 +44,10 @@ public final class HistoryCodec {
                 String issuer = version == 1 ? "" : readText(in);
                 OtpParameters otp = version == 1 ? OtpParameters.DEFAULT : new OtpParameters(readText(in), in.readInt(), in.readInt());
                 String name = version >= 3 ? readText(in) : "";
+                long expires = version >= 4 ? in.readLong() : 0;
+                boolean pinned = version >= 4 && in.readBoolean();
                 try (AccountData data = new AccountData(account, password, secret, first, last, kind, issuer, otp)) {
-                    result.add(HistoryEntry.fromData(id, data, automatic, time).withName(name));
+                    result.add(HistoryEntry.fromData(id, data, automatic, time).withName(name).withManagement(expires, pinned));
                 }
             }
             if (in.available() != 0) throw new IOException("历史记录包含无效内容。");

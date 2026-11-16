@@ -9,6 +9,33 @@ namespace AccountSplit2FA
     public enum InputKind { Record = 0, Secret = 1, AuthenticatorUri = 2 }
     public enum OtpKind { Totp = 0, Hotp = 1 }
 
+    // Fixed elapsed durations shared with Android: day = 24 h, week = 7 d, month = 30 d.
+    public sealed class RetentionPeriod
+    {
+        private static readonly long[] Seconds = { 60, 3600, 86400, 604800, 2592000 };
+        private static readonly string[] Units = { "分", "时", "天", "周", "月" };
+        public int Amount { get; private set; }
+        public int Unit { get; private set; }
+        public string Label { get { return Amount.ToString(CultureInfo.InvariantCulture) + Units[Unit]; } }
+        private RetentionPeriod(int amount, int unit) { Amount = amount; Unit = unit; }
+        public static RetentionPeriod Parse(string text, int unit)
+        {
+            text = (text ?? "").Trim(); int amount;
+            if (text.Length == 0 || text.Length > 6) throw new FormatException("请输入 1 至 999999 的整数。");
+            foreach (char c in text) if (c < '0' || c > '9') throw new FormatException("请输入 1 至 999999 的整数。");
+            if (!Int32.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out amount) || amount < 1)
+                throw new FormatException("请输入 1 至 999999 的整数。");
+            if (unit < 0 || unit >= Units.Length) throw new FormatException("请选择分、时、天、周或月。");
+            return new RetentionPeriod(amount, unit);
+        }
+        public DateTime ExpiresAt(DateTime utcNow)
+        {
+            try { return utcNow.ToUniversalTime().AddTicks(checked(Amount * Seconds[Unit] * TimeSpan.TicksPerSecond)); }
+            catch (ArgumentOutOfRangeException) { throw new FormatException("期限过长，请减小数字或选择更短的单位。"); }
+            catch (OverflowException) { throw new FormatException("期限过长，请减小数字或选择更短的单位。"); }
+        }
+    }
+
     public sealed class AccountData : IDisposable
     {
         public string Account { get; private set; }

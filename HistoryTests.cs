@@ -32,15 +32,99 @@ internal static class HistoryTests
                 writer.Write(0x41564D48); writer.Write(version); writer.Write(1);
                 writer.Write(id.ToString("N")); writer.Write("legacy@example.com"); writer.Write("Legacy%Password"); writer.Write(Secret);
                 writer.Write("----"); writer.Write("----"); writer.Write(true); writer.Write(DateTime.UtcNow.Ticks);
-                if (version == 2) {
+                if (version >= 2) {
                     writer.Write((byte)InputKind.Record); writer.Write(""); writer.Write("SHA1"); writer.Write(6); writer.Write(30);
                     writer.Write((byte)OtpKind.Totp); writer.Write((ulong)0); writer.Write(false);
                 }
+                if (version >= 3) writer.Write("旧版名称");
             }
             plain = stream.ToArray();
         }
         try { File.WriteAllBytes(path, ProtectedData.Protect(plain, Encoding.UTF8.GetBytes("AccountVerificationManager.History.v1"), DataProtectionScope.CurrentUser)); }
         finally { Array.Clear(plain, 0, plain.Length); }
+    }
+    private static void TransferChecks(string folder)
+    {
+        HistoryStore source = new HistoryStore(Path.Combine(folder, "export.bin"));
+        HistoryEntry entry;
+        using (AccountData value = AccountParser.Parse("测试+tag@example.com|  Demo|Password  |otpauth://totp/Issuer:ignored?secret=JBSWY3DPEHPK3PXP&issuer=Issuer&algorithm=SHA256&digits=8&period=60", "|")) entry = source.Record(value, false, new DateTime(2100, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        source.Rename(entry.Id, "工作邮箱"); source.SetPinned(entry.Id, true);
+        byte[] file = HistoryTransfer.Encrypt(source.Entries, "测试密码 🔑 123");
+        System.Collections.Generic.List<HistoryEntry> decoded = HistoryTransfer.Decrypt(file, "测试密码 🔑 123");
+        HistoryEntry actual = decoded[0], expected = source.Entries[0];
+        Check(actual.Account == expected.Account && actual.Password == expected.Password && actual.Secret == expected.Secret && actual.Algorithm == "SHA256" && actual.Digits == 8 && actual.Period == 60, "encrypted transfer preserves exact credentials and OTP parameters");
+        Check(actual.Name == expected.Name && actual.Pinned && actual.ExpiresAtUtc == expected.ExpiresAtUtc && !actual.Automatic && actual.FirstSeparator == "|", "encrypted transfer preserves history settings");
+        Check(!Encoding.UTF8.GetString(file).Contains(expected.Secret), "export file does not contain plaintext key");
+        Check(Convert.ToBase64String(file) != Convert.ToBase64String(HistoryTransfer.Encrypt(source.Entries, "测试密码 🔑 123")), "repeated exports use fresh salt and IV");
+        bool failed = false; try { HistoryTransfer.Decrypt(file, "wrong-password"); } catch (FormatException) { failed = true; } Check(failed, "wrong file password rejected");
+        foreach (int offset in new int[]{8, 24, 40, file.Length - 1}) {
+            byte[] bad = (byte[])file.Clone(); bad[offset] ^= 1; failed = false;
+            try { HistoryTransfer.Decrypt(bad, "测试密码 🔑 123"); } catch (FormatException) { failed = true; }
+            Check(failed, "tampered export rejected before decode at " + offset);
+        }
+        HistoryStore target = new HistoryStore(Path.Combine(folder, "import.bin"));
+        Check(target.Import(decoded) == 1 && target.Entries[0].Name == "工作邮箱", "selected encrypted entries import into independent store");
+        target.Rename(target.Entries[0].Id, "本机名称");
+        Check(target.Import(decoded) == 0 && target.Entries[0].Name == "本机名称", "duplicate import preserves existing metadata");
+        for (int i = 0; i < 9; i++) Record(target, "capacity" + i, "Demo");
+        HistoryStore another = new HistoryStore(Path.Combine(folder, "another.bin")); Record(another, "overflow", "Demo");
+        byte[] before = File.ReadAllBytes(target.FilePath); failed = false;
+        try { target.Import(another.Entries); } catch (InvalidOperationException) { failed = true; }
+        Check(failed && Convert.ToBase64String(before) == Convert.ToBase64String(File.ReadAllBytes(target.FilePath)), "overflow import is atomic and preserves existing history");
+    }
+    private static void ManagementChecks(string folder)
+    {
+        DateTime now = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        string path = Path.Combine(folder, "management.bin");
+        HistoryStore store = new HistoryStore(path, delegate { return now; });
+        HistoryEntry expiring;
+        using (AccountData data = AccountParser.Parse("expire@example.com----Demo----" + Secret)) expiring = store.Record(data, true, now.AddMinutes(5));
+        store.SetPinned(expiring.Id, true); store.Rename(expiring.Id, "保留名称");
+        Record(store, "permanent@example.com", "Demo");
+        Check(store.Entries[0].Id == expiring.Id && store.Entries.Count == 2, "pinned entry remains first when a new record is saved");
+        using (AccountData data = AccountParser.Parse("expire@example.com----Demo----" + Secret)) {
+            HistoryEntry repeated = store.Record(data, true, now.AddDays(2));
+            Check(repeated.Id == expiring.Id && repeated.Pinned && repeated.ExpiresAtUtc == expiring.ExpiresAtUtc && repeated.Name == "保留名称", "duplicate preserves expiry pin identity and name");
+        }
+        HistoryStore concurrent = new HistoryStore(path, delegate { return now; });
+        concurrent.SetExpiration(expiring.Id, now.AddMinutes(10)); store.SetPinned(expiring.Id, false);
+        Check(store.Find(expiring.Id).ExpiresAtUtc == now.AddMinutes(10), "pin update preserves concurrent expiry change");
+        concurrent.SetPinned(expiring.Id, true); store.SetExpiration(expiring.Id, now.AddMinutes(15));
+        Check(store.Find(expiring.Id).Pinned, "expiry update preserves concurrent pin change");
+        HistoryEntry changed = store.ReplaceOtp(store.Find(expiring.Id), "JBSWY3DPEHPK3PXP");
+        Check(changed.Pinned && changed.ExpiresAtUtc == now.AddMinutes(15) && changed.Name == "保留名称", "OTP replacement preserves management metadata");
+        byte[] before = File.ReadAllBytes(path); bool rejected = false;
+        try { store.SetExpiration(expiring.Id, now); } catch (FormatException) { rejected = true; }
+        Check(rejected && Convert.ToBase64String(before) == Convert.ToBase64String(File.ReadAllBytes(path)), "past expiry rejected without modifying history");
+        now = now.AddMinutes(15); store.Load();
+        Check(store.Find(expiring.Id) == null && store.Entries.Count == 1, "pinned record removed at exact expiry boundary");
+        concurrent.Load(); Check(concurrent.Entries.Count == 1, "expiry deletion survives encrypted reload");
+        rejected = false; try { store.ReplaceOtp(changed, Secret); } catch (InvalidOperationException) { rejected = true; }
+        Check(rejected, "expired replacement draft cannot resurrect record");
+        rejected = false; try { store.SetExpiration(changed.Id, now.AddDays(1)); } catch (InvalidOperationException) { rejected = true; }
+        Check(rejected, "expired record cannot be renewed through stale management dialog");
+        Guid permanent = store.Entries[0].Id; store.SetExpiration(permanent, now.AddDays(1)); store.SetExpiration(permanent, null);
+        Check(store.Find(permanent).ExpiresAtUtc == null, "expiry can be cleared to retain permanently");
+        store.Delete(permanent); concurrent.Load(); Check(concurrent.Entries.Count == 0, "single deletion persists across windows");
+        for (int i = 0; i < 10; i++) {
+            now = now.AddSeconds(1);
+            using (AccountData data = AccountParser.Parse("pin" + i + "----Demo----" + Secret)) { HistoryEntry saved = store.Record(data, true); store.SetPinned(saved.Id, true); }
+        }
+        Check(store.Entries.Count == 10, "ten pinned records fit the existing capacity");
+        before = File.ReadAllBytes(path); rejected = false;
+        try { Record(store, "extra", "Demo"); } catch (InvalidOperationException) { rejected = true; }
+        Check(rejected && Convert.ToBase64String(before) == Convert.ToBase64String(File.ReadAllBytes(path)), "all pinned capacity refuses new entry without silent eviction");
+        Guid victim = store.Entries[9].Id; store.SetPinned(victim, false); Record(store, "extra", "Demo");
+        Check(store.Find(victim) == null && store.Entries.Count == 10, "capacity evicts unpinned entry before pinned entries");
+        Guid retained = store.Entries[0].Id; before = new byte[] { 1, 2, 3, 4 }; File.WriteAllBytes(path, before);
+        rejected = false; try { store.Delete(retained); } catch (CryptographicException) { rejected = true; }
+        Check(rejected && File.ReadAllBytes(path).Length == 4, "single deletion cannot overwrite corrupt history");
+        rejected = false; try { store.Load(); } catch (CryptographicException) { rejected = true; }
+        Check(rejected && File.ReadAllBytes(path).Length == 4, "automatic cleanup cannot overwrite corrupt history");
+        string v3Path = Path.Combine(folder, "legacy-v3.bin"); Guid legacyId = Guid.NewGuid(); LegacyFile(v3Path, legacyId, 3);
+        HistoryStore legacy = new HistoryStore(v3Path); legacy.Load(); HistoryEntry legacyEntry = legacy.Find(legacyId);
+        Check(legacyEntry.Name == "旧版名称" && legacyEntry.ExpiresAtUtc == null && !legacyEntry.Pinned, "v3 migration defaults to permanent unpinned and preserves name");
+        legacy.SetPinned(legacyId, true); legacy.Load(); Check(legacy.Find(legacyId).Pinned && legacy.Find(legacyId).Name == "旧版名称", "v3 upgrade persists metadata and name in v4");
     }
     private static void ReplacementChecks(string folder)
     {
@@ -165,9 +249,9 @@ internal static class HistoryTests
             HistoryStore legacy = new HistoryStore(legacyPath); legacy.Load();
             Check(legacy.Entries[0].Id == legacyId && legacy.Entries[0].CurrentCode(59) == "287082" && legacy.Entries[0].Period == 30, "read version 1 history with original defaults");
             SmartRecord(legacy, Secret); legacy.Load();
-            Check(legacy.Entries.Count == 2 && legacy.Entries[1].Id == legacyId && legacy.Entries[1].Password == "Legacy%Password", "version 3 write preserves legacy records and IDs");
+            Check(legacy.Entries.Count == 2 && legacy.Entries[1].Id == legacyId && legacy.Entries[1].Password == "Legacy%Password", "version 4 write preserves legacy records and IDs");
             byte[] migrated = ProtectedData.Unprotect(File.ReadAllBytes(legacyPath), Encoding.UTF8.GetBytes("AccountVerificationManager.History.v1"), DataProtectionScope.CurrentUser);
-            try { using (BinaryReader reader = new BinaryReader(new MemoryStream(migrated))) { reader.ReadInt32(); Check(reader.ReadInt32() == 3, "migration remains encrypted and uses version 3"); } }
+            try { using (BinaryReader reader = new BinaryReader(new MemoryStream(migrated))) { reader.ReadInt32(); Check(reader.ReadInt32() == 4, "migration remains encrypted and uses version 4"); } }
             finally { Array.Clear(migrated, 0, migrated.Length); }
             string v2Path = Path.Combine(folder, "legacy-v2.bin"); Guid v2Id = Guid.NewGuid(); LegacyFile(v2Path, v2Id, 2);
             HistoryStore v2 = new HistoryStore(v2Path); v2.Load();
@@ -210,6 +294,23 @@ internal static class HistoryTests
             reopened.Clear(); HistoryStore cleared = new HistoryStore(path); cleared.Load();
             Check(cleared.Entries.Count == 0, "clear persists across restart and recovers corrupt file");
             ReplacementChecks(folder);
+            ManagementChecks(folder);
+            TransferChecks(folder);
+            DateTime durationNow = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            HistoryStore durationStore = new HistoryStore(Path.Combine(folder, "retention.bin"), () => durationNow);
+            RetentionPeriod duration = RetentionPeriod.Parse("2", 0); durationNow = durationNow.AddHours(3);
+            using (AccountData value = AccountParser.Parse("duration@example.com----Synthetic----" + Secret)) {
+                HistoryEntry first = durationStore.RecordWithRetention(value, true, duration);
+                Check(first.ExpiresAtUtc == durationNow.AddMinutes(2) && first.RecognizedAtUtc == durationNow, "retention starts at actual record time, not settings time");
+                durationStore.SetPinned(first.Id, true); durationNow = durationNow.AddSeconds(30);
+                HistoryEntry duplicate = durationStore.RecordWithRetention(value, true, RetentionPeriod.Parse("9", 4));
+                Check(duplicate.Id == first.Id && duplicate.ExpiresAtUtc == first.ExpiresAtUtc && duplicate.Pinned, "duplicate ignores new duration and preserves pinned expiry");
+                durationNow = first.ExpiresAtUtc.Value.AddTicks(-1); durationStore.Load(); Check(durationStore.Entries.Count == 1, "retention entry remains one tick before expiry");
+                durationNow = first.ExpiresAtUtc.Value; durationStore.Load(); Check(durationStore.Entries.Count == 0, "retention entry removed at exact expiry even when pinned");
+                HistoryStore reloadedDuration = new HistoryStore(Path.Combine(folder, "retention.bin"), () => durationNow); reloadedDuration.Load();
+                Check(reloadedDuration.Entries.Count == 0, "retention deletion persists across restart");
+                Check(!durationStore.RecordWithRetention(value, true, null).ExpiresAtUtc.HasValue, "no retention records permanently");
+            }
             Console.WriteLine("PASS: " + passed + " history checks; encrypted persistence, capacity, deduplication, OTP replacement, live OTP, multi-window updates, failure handling.");
         }
         finally

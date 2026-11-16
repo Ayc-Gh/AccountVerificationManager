@@ -45,6 +45,8 @@ public final class AcceptanceInstrumentation extends Instrumentation {
         Bundle result = new Bundle();
         try {
             check(getTargetContext().getPackageName().endsWith(".qa"), "isolated QA application");
+            if (getTargetContext().getSystemService(android.app.KeyguardManager.class).isKeyguardLocked())
+                throw new IllegalStateException("Unlock the connected phone before interactive QA checks.");
             storageChecks();
             activity = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             main(() -> activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
@@ -57,6 +59,8 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             qrImportChecks();
             historyNamingChecks();
             otpReplacementChecks();
+            historyManagementChecks();
+            transferFileChecks();
             clearRepository(); main(() -> { click(R.id.nav_parse); click(R.id.clear_input); });
             result.putString("stream", "PASS: " + passed + " on-device checks; Keystore, encrypted persistence, corruption recovery, UI parsing, copies, history, lifecycle.\n");
             finish(Activity.RESULT_OK, result);
@@ -243,7 +247,7 @@ public final class AcceptanceInstrumentation extends Instrumentation {
         waitFor(() -> repository.entries().isEmpty());
         main(() -> {
             click(R.id.nav_parse);
-            check(activity.findViewById(R.id.copy_code).isEnabled() && text(R.id.account).getText().toString().equals("demo@example.com"), "confirmed history clear preserves current result");
+            check(!activity.findViewById(R.id.copy_code).isEnabled(), "confirmed history clear invalidates restored credentials");
         });
     }
     private ScrollView scrollFor(int id) {
@@ -391,7 +395,7 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             click(R.id.nav_parse);
             check(activity.findViewById(R.id.qr_photo).isEnabled() && activity.findViewById(R.id.qr_upload).isEnabled(), "both QR import actions available");
             check((activity.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0, "main window blocks screenshots and recordings");
-            check(BuildConfig.VERSION_NAME.startsWith("1.8.0"), "Android synchronized version 1.8.0");
+            check(BuildConfig.VERSION_NAME.startsWith("1.9.2"), "Android synchronized version 1.9.2");
         });
         String uploadText = "otpauth://totp/Upload:uploaded%40example.com?secret=" + SECRET + "&issuer=Upload&algorithm=SHA256&digits=8&period=60";
         File upload = qrFixture(uploadText);
@@ -623,6 +627,138 @@ public final class AcceptanceInstrumentation extends Instrumentation {
         } finally { removeMonitor(photo); }
     }
 
+    private void historyManagementChecks() throws Exception {
+        clearRepository();
+        main(() -> { click(R.id.nav_parse); click(R.id.auto_mode); text(R.id.input).setText("pinned@example.com----Demo----" + SECRET); click(R.id.parse); });
+        waitFor(() -> repository.entries().size() == 1);
+        String pinnedId = repository.entries().get(0).id;
+        CountDownLatch pin = new CountDownLatch(1); main(() -> repository.manage(pinnedId, null, true, ok -> pin.countDown()));
+        check(pin.await(10, TimeUnit.SECONDS) && repository.find(pinnedId).pinned, "pin persists through serial encrypted storage");
+        AtomicReference<RetentionPeriod> expiry = new AtomicReference<>();
+        for (int selection = 0; selection < 5; selection++) {
+            final int selectedUnit = selection;
+            main(() -> {
+                AlertDialog dialog = ExpirationEditor.show(activity, null, 0, false, expiry::set);
+                CheckBox enabled = dialog.getWindow().getDecorView().findViewWithTag("expiry-enabled"); enabled.setChecked(true);
+                EditText amount = dialog.getWindow().getDecorView().findViewWithTag("expiry-amount");
+                Spinner unit = dialog.getWindow().getDecorView().findViewWithTag("expiry-unit");
+                if (selectedUnit == 0) {
+                    for (String invalid : new String[]{"", "0", "-1", "1.5", "1000000", "abc"}) {
+                        amount.setText(invalid); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                        check(dialog.isShowing() && expiry.get() == null, "invalid duration cannot close editor: " + invalid);
+                    }
+                    amount.setText("999999"); unit.setSelection(4); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                    check(dialog.isShowing() && expiry.get() == null, "excessive duration is rejected in editor");
+                }
+                amount.setText("2"); unit.setSelection(selectedUnit); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+                check(!dialog.isShowing() && expiry.get().amount == 2 && expiry.get().unit == selectedUnit, "duration UI accepts unit " + selectedUnit);
+            });
+        }
+        AtomicReference<AlertDialog> pickerOwner = new AtomicReference<>();
+        main(() -> {
+            AlertDialog dialog = ExpirationEditor.show(activity, RetentionPeriod.parse("3", 1), 0, false, value -> { throw new AssertionError("cancel must not save"); }); pickerOwner.set(dialog);
+            Spinner unit = dialog.getWindow().getDecorView().findViewWithTag("expiry-unit"); unit.performClick();
+        });
+        clickDialog("月");
+        main(() -> {
+            Spinner unit = pickerOwner.get().getWindow().getDecorView().findViewWithTag("expiry-unit");
+            check(unit.getSelectedItemPosition() == 4, "protected unit picker changes adjacent selection");
+            pickerOwner.get().getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+        });
+        AtomicBoolean permanent = new AtomicBoolean();
+        main(() -> {
+            AlertDialog dialog = ExpirationEditor.show(activity, null, System.currentTimeMillis() + 86400000, true, value -> permanent.set(value == null));
+            CheckBox enabled = dialog.getWindow().getDecorView().findViewWithTag("expiry-enabled"); enabled.setChecked(false);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); check(permanent.get(), "history expiry can be removed to keep permanently");
+        });
+        main(() -> {
+            AlertDialog dialog = ExpirationEditor.show(activity, null, 0, false, expiry::set);
+            check((dialog.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0, "expiry dialog is protected");
+            CheckBox enabled = dialog.getWindow().getDecorView().findViewWithTag("expiry-enabled");
+            check(!enabled.isChecked(), "expiry defaults to permanent"); enabled.setChecked(true);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            try { java.lang.reflect.Field field = MainActivity.class.getDeclaredField("newRetention"); field.setAccessible(true); field.set(activity, expiry.get()); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        recreateActivity();
+        main(() -> {
+            text(R.id.input).setText("second@example.com----Demo----" + SECRET); click(R.id.parse);
+        });
+        waitFor(() -> repository.entries().size() == 2);
+        HistoryEntry second = repository.entries().stream().filter(e -> e.account.equals("second@example.com")).findFirst().get();
+        main(() -> {
+            check(repository.entries().get(0).id.equals(pinnedId) && text(R.id.account).getText().toString().equals("second@example.com"), "new parse selects actual record with pinned first entry");
+            check(second.expiresAt == expiry.get().expiresAt(second.recognizedAt), "duration survives rotation and begins at first save time");
+            check(activity.getWindow().getDecorView().findViewWithTag("history-manage:" + second.id) != null, "history has per-record management entry");
+        });
+        AtomicReference<List<HistoryEntry>> selection = new AtomicReference<>(); AtomicReference<String> password = new AtomicReference<>();
+        main(() -> {
+            AlertDialog dialog = TransferDialogs.select(activity, "测试多选", repository.entries(), selection::set);
+            check((dialog.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0, "multi-selection dialog is protected");
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).performClick(); dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            check(selection.get().size() == 2, "multi-selection exports both selected entries");
+            AlertDialog secretDialog = TransferDialogs.password(activity, true, password::set);
+            check((secretDialog.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0, "file password dialog is protected");
+            EditText first = secretDialog.getWindow().getDecorView().findViewWithTag("文件密码"), confirm = secretDialog.getWindow().getDecorView().findViewWithTag("再次输入文件密码");
+            first.setText("测试密码 🔑 123"); confirm.setText("different"); secretDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            check(secretDialog.isShowing() && password.get() == null, "mismatched file passwords cannot export");
+            confirm.setText("测试密码 🔑 123"); secretDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            check(password.get().equals("测试密码 🔑 123") && first.length() == 0 && confirm.length() == 0, "file password accepted and cleared from editor");
+        });
+        byte[] encrypted = HistoryTransfer.encrypt(selection.get(), password.get());
+        List<HistoryEntry> decoded = HistoryTransfer.decrypt(encrypted, password.get());
+        check(decoded.size() == 2 && decoded.get(0).pinned && decoded.get(1).expiresAt == second.expiresAt, "device encryption roundtrip preserves selection and settings");
+        boolean rejected = false; try { HistoryTransfer.decrypt(encrypted, "wrong"); } catch (Exception expected) { rejected = true; }
+        check(rejected, "wrong import password is rejected on device");
+        CountDownLatch deadline = new CountDownLatch(1); main(() -> repository.manage(second.id, System.currentTimeMillis() + 2500, null, ok -> deadline.countDown()));
+        check(deadline.await(10, TimeUnit.SECONDS), "short expiry scheduled");
+        main(() -> click(R.id.replace_otp));
+        waitFor(() -> repository.find(second.id) == null);
+        waitFor(() -> !activity.findViewById(R.id.copy_code).isEnabled() && text(R.id.input).length() == 0);
+        main(() -> check(!activity.findViewById(R.id.copy_code).isEnabled() && text(R.id.input).length() == 0, "expiry clears current credentials and copy actions"));
+        check(new EncryptedHistoryStore(getTargetContext()).load().size() == 1, "expired deletion persists on disk");
+        clearRepository(); CountDownLatch imported = new CountDownLatch(1); main(() -> repository.importEntries(decoded, ok -> imported.countDown()));
+        check(imported.await(10, TimeUnit.SECONDS) && repository.entries().size() == 2, "multiple decrypted entries import into encrypted local storage");
+        CountDownLatch removed = new CountDownLatch(1); String id = repository.entries().get(0).id; main(() -> repository.delete(id, ok -> removed.countDown()));
+        check(removed.await(10, TimeUnit.SECONDS) && repository.entries().size() == 1, "single delete keeps other history entries");
+    }
+    private void passwordNodes(android.view.accessibility.AccessibilityNodeInfo root, List<android.view.accessibility.AccessibilityNodeInfo> result) {
+        if (root == null) return;
+        if ("android.widget.EditText".contentEquals(root.getClassName()) && root.isEnabled()) result.add(root);
+        for (int i = 0; i < root.getChildCount(); i++) passwordNodes(root.getChild(i), result);
+    }
+    private void enterFilePassword(int count) throws Exception {
+        List<android.view.accessibility.AccessibilityNodeInfo> fields = new ArrayList<>();
+        waitFor(() -> { fields.clear(); passwordNodes(getUiAutomation().getRootInActiveWindow(), fields); return fields.size() == count; });
+        for (android.view.accessibility.AccessibilityNodeInfo node : fields) {
+            Bundle args = new Bundle(); args.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "Synthetic-file-password-123");
+            if (!node.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args)) throw new AssertionError("cannot enter synthetic file password");
+        }
+    }
+    private void transferFileChecks() throws Exception {
+        main(() -> { click(R.id.nav_parse); click(R.id.auto_mode); text(R.id.input).setText("file@example.com----Demo----" + SECRET); click(R.id.parse); });
+        waitFor(() -> repository.entries().size() == 2);
+        File directory = new File(getTargetContext().getCacheDir(), "qr-photos"); directory.mkdirs();
+        File file = new File(directory, "synthetic-history.avmx"); if (file.exists()) file.delete();
+        AtomicBoolean exported = new AtomicBoolean(), imported = new AtomicBoolean();
+        ActivityMonitor monitor = new ActivityMonitor() { @Override public ActivityResult onStartActivity(Intent intent) {
+            if (!Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction()) && !Intent.ACTION_OPEN_DOCUMENT.equals(intent.getAction())) return null;
+            if (Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())) exported.set(true); else imported.set(true);
+            Uri uri = FileProvider.getUriForFile(getTargetContext(), getTargetContext().getPackageName() + ".qr-photos", file);
+            return new ActivityResult(Activity.RESULT_OK, new Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+        }}; addMonitor(monitor);
+        try {
+            main(() -> { click(R.id.nav_history); activity.getWindow().getDecorView().findViewWithTag("history-export").performClick(); });
+            clickDialog("全选 / 取消"); clickDialog("继续"); enterFilePassword(2); clickDialog("继续");
+            waitFor(() -> exported.get() && file.length() > 88 && text(R.id.status).getText().toString().contains("已导出"));
+            check(HistoryTransfer.decrypt(Files.readAllBytes(file.toPath()), "Synthetic-file-password-123").size() == 2, "actual create-document route writes selected encrypted file");
+            clearRepository();
+            main(() -> activity.getWindow().getDecorView().findViewWithTag("history-import").performClick());
+            enterFilePassword(1); clickDialog("继续"); clickDialog("全选 / 取消"); clickDialog("继续");
+            waitFor(() -> imported.get() && repository.entries().size() == 2);
+            check(repository.entries().stream().anyMatch(e -> e.account.equals("file@example.com")), "actual open-document route decrypts and imports selected records");
+            check(new EncryptedHistoryStore(getTargetContext()).load().size() == 2, "file import survives encrypted storage reload");
+        } finally { removeMonitor(monitor); file.delete(); }
+    }
     private void clearRepository() throws Exception {
         CountDownLatch latch = new CountDownLatch(1); boolean[] ok = {false};
         main(() -> repository.clear(success -> { ok[0] = success; latch.countDown(); }));
@@ -643,7 +779,17 @@ public final class AcceptanceInstrumentation extends Instrumentation {
         if (!value) throw new AssertionError(label); passed++;
         Bundle status = new Bundle(); status.putString("stream", "PASS " + label + "\n"); sendStatus(0, status);
     }
-    private void main(Runnable action) { runOnMainSync(action); waitForIdleSync(); }
+    private void main(Runnable action) {
+        final Throwable[] failure = new Throwable[1];
+        runOnMainSync(() -> {
+            try {
+                if (activity != null && !activity.isDestroyed()) activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                action.run();
+            } catch (Throwable error) { failure[0] = error; }
+        });
+        waitForIdleSync();
+        if (failure[0] != null) throw new AssertionError("QA main-thread check failed", failure[0]);
+    }
     private void waitFor(BooleanSupplier condition) throws Exception {
         long until = SystemClock.elapsedRealtime() + 10000;
         while (!condition.getAsBoolean()) {

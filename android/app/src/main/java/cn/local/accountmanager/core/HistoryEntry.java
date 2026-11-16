@@ -3,6 +3,9 @@ package cn.local.accountmanager.core;
 public final class HistoryEntry {
     public static final int NAME_LIMIT = 40;
     public final String name;
+    public final long expiresAt;
+    public final boolean pinned;
+    public boolean expired(long now) { return expiresAt > 0 && expiresAt <= now; }
     public final String id, account, password, secret, firstSeparator, lastSeparator;
     public final boolean automatic;
     public final long recognizedAt;
@@ -19,6 +22,12 @@ public final class HistoryEntry {
     }
     public HistoryEntry(String id, String account, String password, String secret, String first, String last, boolean automatic, long time,
                         AccountData.Kind kind, String issuer, OtpParameters otp, String name) {
+        this(id, account, password, secret, first, last, automatic, time, kind, issuer, otp, name, 0, false);
+    }
+    public HistoryEntry(String id, String account, String password, String secret, String first, String last, boolean automatic, long time,
+                        AccountData.Kind kind, String issuer, OtpParameters otp, String name, long expiresAt, boolean pinned) {
+        if (expiresAt < 0) throw new IllegalArgumentException("到期时间无效。");
+        this.expiresAt = expiresAt; this.pinned = pinned;
         this.id = id; this.account = account; this.password = password; this.secret = secret;
         firstSeparator = first; lastSeparator = last; this.automatic = automatic; recognizedAt = time;
         this.kind = kind; this.issuer = issuer; this.otp = otp;
@@ -36,7 +45,10 @@ public final class HistoryEntry {
         return name;
     }
     public HistoryEntry withName(String value) {
-        return new HistoryEntry(id, account, password, secret, firstSeparator, lastSeparator, automatic, recognizedAt, kind, issuer, otp, value);
+        return new HistoryEntry(id, account, password, secret, firstSeparator, lastSeparator, automatic, recognizedAt, kind, issuer, otp, value, expiresAt, pinned);
+    }
+    public HistoryEntry withManagement(long expires, boolean pin) {
+        return new HistoryEntry(id, account, password, secret, firstSeparator, lastSeparator, automatic, recognizedAt, kind, issuer, otp, name, expires, pin);
     }
     public static HistoryEntry fromData(String id, AccountData data, boolean automatic, long time) {
         return new HistoryEntry(id, data.account, data.password, data.secret, data.firstSeparator, data.lastSeparator, automatic, time,

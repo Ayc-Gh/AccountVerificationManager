@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using AccountSplit2FA;
 
@@ -85,6 +87,171 @@ internal static class UiChecks
             Check(!saved && store.Find(entry.Id).Secret == "JBSWY3DPEHPK3PXP", "cancel replacement never commits the draft");
         }
     }
+    private static void CheckTransferDialogs(string checks, HistoryStore store)
+    {
+        store.Load();
+        using (TransferSelectionDialog dialog = new TransferSelectionDialog("选择导出的记录", store.Entries)) {
+            ShowOffscreen(dialog); CheckedListBox list = Field<CheckedListBox>(dialog, "list");
+            Check(Fits(list) && list.Items.Count == store.Entries.Count, "transfer list fits and contains active history entries");
+            list.SetItemChecked(0, true); Preview(dialog, checks, "windows-v1.9.0-export.png");
+            foreach (Control control in dialog.Controls) if (control.Text == "继续") { typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(control, new object[]{EventArgs.Empty}); break; }
+            Check(dialog.Selected.Count == 1 && dialog.Selected[0].Id == store.Entries[0].Id, "transfer selection returns only checked records");
+        }
+        using (TransferPasswordDialog dialog = new TransferPasswordDialog(true)) {
+            ShowOffscreen(dialog); TextBox password = Field<TextBox>(dialog, "password"), confirm = Field<TextBox>(dialog, "confirmation");
+            Check(password.UseSystemPasswordChar && confirm.UseSystemPasswordChar, "export password fields are masked");
+            password.Text = "Synthetic password"; confirm.Text = "mismatch"; Call(dialog, "Save");
+            Check(dialog.Visible && dialog.Password == null, "password mismatch keeps editor open without export");
+            confirm.Text = password.Text; Call(dialog, "Save");
+            Check(dialog.Password == "Synthetic password" && password.TextLength == 0 && confirm.TextLength == 0, "confirmed export password clears editor content");
+        }
+    }
+    private static void CheckHistoryManagement(string checks, string path)
+    {
+        HistoryStore store = new HistoryStore(path); store.Clear();
+        using (AccountData value = AccountParser.Parse("pinned@example.com----Demo----" + Secret)) store.SetPinned(store.Record(value, true).Id, true);
+        using (MainForm form = new MainForm(path)) {
+            ShowOffscreen(form);
+            TextBox input = Field<TextBox>(form, "input"); input.Text = "new@example.com----Demo----" + Secret;
+            typeof(MainForm).GetField("newRetention", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, RetentionPeriod.Parse("1", 1));
+            Call(form, "ParseInput"); store.Load();
+            Guid selected = Field<Guid>(form, "selectedHistory");
+            Check(store.Entries[0].Account == "pinned@example.com" && store.Find(selected).Account == "new@example.com", "parsing selects saved ID instead of pinned first entry");
+            Check(store.Find(selected).ExpiresAtUtc == store.Find(selected).RecognizedAtUtc.AddHours(1) && Field<RetentionPeriod>(form, "newRetention") == null, "first parse starts duration at save time and resets input default");
+            for (int width = 780; width <= 876; width += 96) {
+                form.Width = width; Layout(form); Check(Fits(Field<Control>(form, "expiryButton")), "expiry control fits compact width " + width);
+            }
+            form.ClientSize = new System.Drawing.Size(860, 660); Call(form, "ToggleHistory"); Layout(form);
+            Preview(form, checks, "windows-v1.9.0-history.png");
+            store.Delete(selected); Field<HistoryStore>(form, "history").Load();
+            typeof(MainForm).GetMethod("SynchronizeHistory", BindingFlags.Instance | BindingFlags.NonPublic, null, new Type[]{typeof(bool)}, null).Invoke(form, new object[]{true});
+            Check(Field<AccountData>(form, "data") == null && input.TextLength == 0 && !Field<Control>(form, "codeCopy").Enabled, "deletion in another window invalidates selected credentials and copy buttons");
+            form.Close();
+        }
+        for (int selectedUnit = 0; selectedUnit < 5; selectedUnit++) {
+            RetentionPeriod saved = null;
+            using (ExpirationDialog dialog = new ExpirationDialog(null, null, false, value => saved = value)) {
+                ShowOffscreen(dialog); TextBox amount = Field<TextBox>(dialog, "amount"); ComboBox unit = Field<ComboBox>(dialog, "unit");
+                Check(!amount.Enabled && !unit.Enabled, "expiry dialog defaults to permanent " + selectedUnit);
+                Field<CheckBox>(dialog, "enabled").Checked = true;
+                if (selectedUnit == 0) {
+                    foreach (string invalid in new string[] { "", "0", "-1", "1.5", "abc" }) {
+                        amount.Text = invalid; Call(dialog, "Save");
+                        Check(dialog.Visible && saved == null && Field<Label>(dialog, "feedback").Text.Contains("整数"), "invalid duration stays editable: " + invalid);
+                    }
+                    amount.Text = "999999"; unit.SelectedIndex = 4; Call(dialog, "Save");
+                    Check(dialog.Visible && saved == null && Field<Label>(dialog, "feedback").Text.Contains("过长"), "excessive duration cannot save");
+                }
+                amount.Text = "2"; unit.SelectedIndex = selectedUnit;
+                Check(Fits(amount) && Fits(unit) && amount.Right < unit.Left, "duration number and adjacent unit fit " + selectedUnit);
+                if (selectedUnit == 2) Preview(dialog, checks, "windows-v1.9.2-expiry.png");
+                Call(dialog, "Save");
+                Check(saved != null && saved.Amount == 2 && saved.Unit == selectedUnit && dialog.DialogResult == DialogResult.OK, "chosen duration saved " + selectedUnit);
+            }
+        }
+        bool called = false;
+        using (ExpirationDialog dialog = new ExpirationDialog(RetentionPeriod.Parse("3", 3), null, false, value => called = true)) {
+            ShowOffscreen(dialog);
+            Check(Field<TextBox>(dialog, "amount").Text == "3" && Field<ComboBox>(dialog, "unit").SelectedIndex == 3, "reopened duration preserves number and unit");
+            Call(dialog, "ProcessDialogKey", Keys.Escape); Check(!called, "cancel duration does not change settings");
+        }
+        using (ExpirationDialog dialog = new ExpirationDialog(null, DateTime.UtcNow.AddDays(5), true, value => { called = true; Check(value == null, "disable expiry chooses permanent"); })) {
+            ShowOffscreen(dialog); Field<CheckBox>(dialog, "enabled").Checked = false; Field<TextBox>(dialog, "amount").Text = "invalid";
+            Call(dialog, "Save"); Check(called && dialog.DialogResult == DialogResult.OK, "permanent choice ignores disabled numeric field");
+        }
+        bool fail = true;
+        using (ExpirationDialog dialog = new ExpirationDialog(RetentionPeriod.Parse("4", 1), null, true, value => { if (fail) throw new IOException("synthetic save failure"); })) {
+            ShowOffscreen(dialog); Call(dialog, "Save");
+            Check(dialog.Visible && Field<TextBox>(dialog, "amount").Text == "4" && Field<Label>(dialog, "feedback").Text.Contains("失败"), "duration write failure preserves editable draft");
+            fail = false; Call(dialog, "Save"); Check(dialog.DialogResult == DialogResult.OK, "duration write can retry");
+        }
+    }
+    [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr window, StringBuilder value, int capacity);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr window, StringBuilder value, int capacity);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr value, IntPtr extra);
+
+    private static void ClickDelete(MainForm form, DeferredContextMenu menu, bool confirm)
+    {
+        bool answered = false; DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        using (Timer answer = new Timer { Interval = 20 }) {
+            answer.Tick += delegate {
+                IntPtr popup = GetWindow(form.Handle, 6); // GW_ENABLEDPOPUP, restricted to this test form/thread.
+                StringBuilder title = new StringBuilder(100), kind = new StringBuilder(100); uint process;
+                GetWindowText(popup, title, title.Capacity); GetClassName(popup, kind, kind.Capacity);
+                if (GetWindowThreadProcessId(popup, out process) == GetCurrentThreadId() && kind.ToString() == "#32770" && title.ToString() == "删除记录") {
+                    answer.Stop(); answered = true;
+                    SendMessage(popup, 0x0111, new IntPtr(confirm ? 1 : 2), IntPtr.Zero); // WM_COMMAND: IDOK / IDCANCEL.
+                } else if (DateTime.UtcNow > deadline) throw new Exception("Delete confirmation did not appear in the test thread.");
+            };
+            answer.Start(); menu.Items[2].PerformClick(); Application.DoEvents();
+        }
+        Check(answered && !menu.IsDisposed && !menu.Visible, "delete confirmation closes safely: " + confirm);
+    }
+    private static void CheckContextMenuLifetime(string path)
+    {
+        HistoryStore store = new HistoryStore(path); store.Clear(); HistoryEntry entry;
+        using (AccountData data = AccountParser.Parse("menu@example.com|SyntheticPassword|" + Secret, "|")) entry = store.Record(data, false);
+        DeferredContextMenu menu;
+        using (MainForm form = new MainForm(path)) {
+            ShowOffscreen(form); Call(form, "ToggleHistory");
+            menu = Field<DeferredContextMenu>(form, "managementMenu");
+            for (int i = 0; i < 4; i++) {
+                Control anchor = Field<FlowLayoutPanel>(form, "historyList").Controls[0];
+                Call(form, "PromptManagement", entry.Id, anchor);
+                Check(menu.Visible && menu.Items[1].Text == (i % 2 == 0 ? "置顶" : "取消置顶"), "management menu reopens with current pin state " + i);
+                menu.Items[1].PerformClick();
+                Check(!menu.Visible && !menu.IsDisposed && store.Find(entry.Id).Pinned == (i % 2 != 0), "click closes menu before changing history " + i);
+                Application.DoEvents();
+                Check(store.Find(entry.Id).Pinned == (i % 2 == 0), "queued pin action updates history safely " + i);
+            }
+            Call(form, "PromptManagement", entry.Id, form); menu.Close(); Application.DoEvents();
+            Check(!menu.IsDisposed && !store.Find(entry.Id).Pinned, "dismissing management menu keeps it reusable and changes nothing");
+            bool edited = false;
+            using (Timer answer = new Timer { Interval = 20 }) {
+                DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                answer.Tick += delegate {
+                    foreach (Form owned in form.OwnedForms) if (owned is ExpirationDialog) {
+                        answer.Stop(); edited = true;
+                        Field<CheckBox>(owned, "enabled").Checked = true;
+                        Field<TextBox>(owned, "amount").Text = "2"; Field<ComboBox>(owned, "unit").SelectedIndex = 2;
+                        Call(owned, "Save"); return;
+                    }
+                    if (DateTime.UtcNow > deadline) throw new Exception("Expiration editor did not appear.");
+                };
+                Call(form, "PromptManagement", entry.Id, form); answer.Start(); menu.Items[0].PerformClick(); Application.DoEvents();
+            }
+            Check(edited && store.Find(entry.Id).ExpiresAtUtc.HasValue && !menu.IsDisposed, "expiry menu opens modal editor and saves after dropdown closes");
+            Call(form, "PromptManagement", entry.Id, form); ClickDelete(form, menu, false);
+            Check(store.Find(entry.Id) != null, "cancel from delete menu preserves history");
+            Call(form, "PromptManagement", entry.Id, form); ClickDelete(form, menu, true);
+            Check(store.Find(entry.Id) == null, "confirm from delete menu removes selected synthetic history");
+            form.Close();
+        }
+        Check(menu.IsDisposed, "management menu is disposed with its form");
+        using (OtpReplaceDialog dialog = new OtpReplaceDialog(entry, delegate(string text) { throw new Exception("QR choice must not commit replacement."); })) {
+            ShowOffscreen(dialog); menu = Field<DeferredContextMenu>(dialog, "qrChoices");
+            string[] choices = { Secret, "JBSWY3DPEHPK3PXP" };
+            for (int i = 0; i < 3; i++) {
+                Call(dialog, "ShowQrChoices", (object)choices); menu.Items[i % 2].PerformClick();
+                Check(!menu.IsDisposed && !menu.Visible, "QR choice closes without disposing menu " + i);
+                Application.DoEvents();
+                Check(Field<TextBox>(dialog, "replacementInput").Text == choices[i % 2], "QR selection updates replacement draft " + i);
+            }
+            Call(dialog, "ShowQrChoices", (object)choices); menu.Close();
+            Check(!menu.IsDisposed, "cancelled QR chooser remains reusable");
+            dialog.Close();
+        }
+        Check(menu.IsDisposed, "QR menu is disposed with replacement dialog");
+        bool ran = false;
+        using (Form owner = new Form()) {
+            ShowOffscreen(owner); menu = new DeferredContextMenu(owner); menu.AddAction("close race", delegate { ran = true; });
+            menu.Show(owner, new System.Drawing.Point(0, 0)); menu.Items[0].PerformClick(); owner.Close(); Application.DoEvents();
+        }
+        Check(!ran && menu.IsDisposed, "closing owner discards pending action and disposes its menu");
+    }
     [STAThread]
     private static void Main()
     {
@@ -98,6 +265,7 @@ internal static class UiChecks
             for (int i = 1; i <= 12; i++)
                 using (AccountData data = AccountParser.Parse("demo" + i + "@example.com------Test%_Password*=====" + Secret)) store.Record(data, true);
             using (AccountData data = AccountParser.Parse("manual@example.com|***Keep|Symbols***|" + Secret, "|")) store.Record(data, false);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             using (MainForm form = new MainForm(path))
             {
@@ -172,7 +340,7 @@ internal static class UiChecks
                 foreach (int width in new int[] { 780, 876, 1024 }) {
                     form.Size = new System.Drawing.Size(width, width == 780 ? 660 : 700); Layout(form); Application.DoEvents();
                     foreach (string control in new string[] { "qrUpload", "allCopy", "accountCopy", "passwordCopy", "secretCopy", "codeCopy", "replaceOtp" })
-                        Check(Fits(Field<Control>(form, control)), control + " fits at window width " + width);
+                        Check(Fits(Field<Control>(form, control)), control + " fits at window width " + width + " (bounds " + Field<Control>(form, control).Bounds + ", parent " + Field<Control>(form, control).Parent.ClientSize + ")");
                     Label otp = Field<Label>(form, "codeLabel");
                     System.Drawing.Size measured = TextRenderer.MeasureText(otp.Text, otp.Font, new System.Drawing.Size(Int32.MaxValue, Int32.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
                     Check(measured.Width <= otp.Width && measured.Height <= otp.Height, "eight-digit code fits at window width " + width + " (measured " + measured + ", label " + otp.Size + ", font " + otp.Font.Size + ")");
@@ -185,7 +353,7 @@ internal static class UiChecks
                 form.ClientSize = new System.Drawing.Size(860, 660); Layout(form); Application.DoEvents();
                 Layout(form);
                 Control qrAction = Field<Control>(form, "qrUpload");
-                Check(qrAction.Width >= 120 && qrAction.Right <= qrAction.Parent.ClientSize.Width, "QR upload action fits the desktop layout");
+                Check(qrAction.Width >= 120 && qrAction.Right <= qrAction.Parent.ClientSize.Width, "QR upload action fits the desktop layout (bounds " + qrAction.Bounds + ", parent " + qrAction.Parent.ClientSize + ", form " + form.ClientSize + ")");
                 Preview(form, checks, "windows-v1.7.1-main.png");
                 Call(form, "ToggleHistory"); Layout(form); Application.DoEvents();
                 Preview(form, checks, "windows-v1.7.1-history.png");
@@ -200,6 +368,9 @@ internal static class UiChecks
             }
             CheckNameDialog(checks, store);
             CheckReplacementDialog(checks, store);
+            CheckTransferDialogs(checks, store);
+            CheckHistoryManagement(checks, path);
+            CheckContextMenuLifetime(path);
             Console.WriteLine("PASS: " + passed + " UI integration checks; compact layout, history navigation, naming, live OTP, QR import, minimum size and Escape behavior.");
         }
         catch (Exception error)

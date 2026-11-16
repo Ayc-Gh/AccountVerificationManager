@@ -30,6 +30,28 @@ internal static class Tests
     }
     private static void Main()
     {
+        DateTime retentionStart = new DateTime(2028, 1, 31, 23, 59, 30, DateTimeKind.Utc);
+        long[] retentionSeconds = { 60, 3600, 86400, 604800, 2592000 };
+        string[] retentionUnits = { "分", "时", "天", "周", "月" };
+        for (int unit = 0; unit < 5; unit++) {
+            RetentionPeriod period = RetentionPeriod.Parse(" 2 ", unit);
+            Equal(retentionStart.AddSeconds(2 * retentionSeconds[unit]).ToString("o"), period.ExpiresAt(retentionStart).ToString("o"), "retention exact duration " + unit);
+            Equal("2" + retentionUnits[unit], period.Label, "retention display " + unit);
+        }
+        foreach (string invalid in new string[] { null, "", " ", "0", "000000", "-1", "+1", "1.5", "1e2", "1000000", "99999999999999", "1 0", "２", "abc" }) {
+            try { RetentionPeriod.Parse(invalid, 0); throw new Exception("FAIL: invalid retention accepted"); }
+            catch (FormatException) { passed++; }
+        }
+        foreach (int invalidUnit in new int[] { -1, 5 }) {
+            try { RetentionPeriod.Parse("1", invalidUnit); throw new Exception("FAIL: invalid retention unit accepted"); }
+            catch (FormatException) { passed++; }
+        }
+        foreach (DateTime start in new DateTime[] { retentionStart, DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc) }) {
+            try { RetentionPeriod.Parse("999999", 4).ExpiresAt(start); throw new Exception("FAIL: retention overflow accepted"); }
+            catch (FormatException) { passed++; }
+        }
+        Equal(retentionStart.AddMinutes(999999).ToString("o"), RetentionPeriod.Parse("999999", 0).ExpiresAt(retentionStart).ToString("o"), "maximum numeric retention supported when date fits");
+        Equal("2028-03-01T23:59:30.0000000Z", RetentionPeriod.Parse("1", 4).ExpiresAt(retentionStart).ToString("o"), "month is exactly 30 days through leap February");
         // RFC 6238 Appendix B: SHA-1, 30-second step, 8 digits.
         long[] times = { 59L, 1111111109L, 1111111111L, 1234567890L, 2000000000L, 20000000000L };
         string[] codes = { "94287082", "07081804", "14050471", "89005924", "69279037", "65353130" };
