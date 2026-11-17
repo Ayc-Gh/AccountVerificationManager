@@ -1,10 +1,10 @@
-﻿# 账号验证管家 Android
+# 账号验证管家 Android
 
-账号验证管家的 Android 原生应用。当前源码为 1.10.0 本地测试版，新增 OpenAI / Claude 官方网页授权、历史账号自动填充以及 CPA / sub2api JSON 导出。Android 真实网页登录与目标服务导入未验收；Windows OpenAI 真实登录与双格式保存已通过。Claude 按用户要求停止真实账号核验，尚未发布。最新已发布的 1.9.2 支持“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
+账号验证管家的 Android 原生应用。当前正式版本为 **1.10.0**，新增 OpenAI / Claude 官方网页授权、历史账号自动填充以及 CPA / sub2api JSON 导出。Android 真实网页登录与目标服务导入未验收；Windows OpenAI 真实登录与双格式保存已通过。Claude 按用户要求停止真实账号核验。同时保留“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
 
-[Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) · [Windows v1.9.2](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
+[Android v1.10.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.10.0/AccountVerificationManager-android-v1.10.0.apk) · [Windows v1.10.0](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.10.0/AccountVerificationManager-v1.10.0-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
 
-支持 Android 8.0 及以上，无网络权限，二维码解码使用内置 ZXing，拍照文件使用 AndroidX FileProvider。界面支持系统深色模式。
+支持 Android 8.0 及以上，解析与验证码离线运行、登录按需联网；自动填充需 Android 9.0+。二维码解码使用内置 ZXing，拍照文件使用 AndroidX FileProvider。界面支持系统深色模式。
 
 ## 更换 2FA
 
@@ -18,7 +18,7 @@
 
 点击“拍照识别二维码”调用系统相机，确认照片后识别；点击“上传二维码图片”从系统文件选择器选择图片。图像在本机解码，支持纯密钥与标准 TOTP URI，保留算法、位数和周期。同图多个有效二维码可选择一条。取消不会改动当前结果，失败会使旧复制按钮失效。已恢复防截图、录屏及最近任务预览保护，复制内容使用敏感标记隐藏系统预览。
 
-两端本地版本统一为 1.9.0；Android versionCode 为 10900，保留原签名。1.9.0 尚未发布 GitHub，详情见 [历史管理与加密导入导出](../docs/v1.9.0历史管理与加密导入导出.md)。
+两端正式版本统一为 1.10.0；Android versionCode 为 11000，保留原签名。1.9.x 的期限管理与加密备份已包含，详情见 [历史管理与加密导入导出](../docs/v1.9.0历史管理与加密导入导出.md)。
 
 ## 历史命名
 
@@ -61,7 +61,7 @@ Windows PowerShell 7、JDK 21、Android SDK platform 37 和 build-tools 37.0.0�
 .\build.ps1 -Offline
 ```
 
-脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前本地构建为 `release/账号验证管家-v1.10.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
+脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前发布构建为 `release/账号验证管家-v1.10.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
 
 ## 真实设备测试
 
@@ -73,13 +73,13 @@ adb shell am force-stop cn.local.accountmanager.qa
 adb shell am instrument -w cn.local.accountmanager.qa.test/cn.local.accountmanager.AcceptanceInstrumentation
 ```
 
-测试目标包为 `cn.local.accountmanager.qa`，与正式包 `cn.local.accountmanager` 的数据完全分开。设备测试只使用虚构数据，并在成功后清除测试历史；`-e preview true` 会在测试过程中将本应用窗口的截图保存到测试包的外部私有目录 `files/screenshots`，不保留演示账号。`build.ps1 -DeviceTests` 会附加生成两个测试 APK，设备执行仍使用上述 adb 命令。单元测试报告在 `app/build/reports/tests/testDebugUnitTest`；功能对应关系见 [迁移分析](docs/项目理解与功能对应.md)。
+测试目标包为 `cn.local.accountmanager.qa`，与正式包 `cn.local.accountmanager` 的数据完全分开。设备测试只使用虚构数据，并在成功后清除测试历史；当前版本禁止截图和录屏，验收不取消这些保护。`build.ps1 -DeviceTests` 会附加生成两个测试 APK，设备执行仍使用上述 adb 命令。单元测试报告在 `app/build/reports/tests/testDebugUnitTest`；功能对应关系见 [迁移分析](docs/项目理解与功能对应.md)。
 
-当前发布产物及验收范围见 [验证报告](docs/验证报告.md)。[纯密钥](docs/preview-secret.png)、[Authenticator URI](docs/preview-uri.png)、[URI 识别结果](docs/preview-uri-details.png)、[三种类型历史](docs/preview-smart-history.png) 均为虚构数据的真机窗口截图。
+1.10.0 发布产物及验收范围见 [登录与文件生成](../docs/v1.10.0登录与文件生成.md)；[早期验证报告](docs/验证报告.md) 保留历史验收范围。[纯密钥](docs/preview-secret.png)、[Authenticator URI](docs/preview-uri.png)、[URI 识别结果](docs/preview-uri-details.png)、[三种类型历史](docs/preview-smart-history.png) 均为虚构数据的真机窗口截图。
 
 ## 结构
 
-`core/SmartParser` 区分三种输入，`AuthenticatorUri` 解析和生成 URI，`AccountParser` 保留原账号分隔规则，`OtpParameters` 和 `Totp` 处理实际验证码参数。`HistoryCodec` 写入 v3 数据并兼容读取 v1/v2；加密文件封装、Keystore 别名和密钥保持兼容。`storage/` 串行异步读写，`MainActivity` 提供原生视图与生命周期处理。修改屏幕方向时仅在内存保留当前结果，进程退出后从历史手动恢复；不将凭据写入 Activity Bundle。
+`core/SmartParser` 区分三种输入，`AuthenticatorUri` 解析和生成 URI，`AccountParser` 保留原账号分隔规则，`OtpParameters` 和 `Totp` 处理实际验证码参数。`HistoryCodec` 写入 v4 数据并兼容读取 v1/v2/v3；加密文件封装、Keystore 别名和密钥保持兼容。`storage/` 串行异步读写，`MainActivity` 提供原生视图与生命周期处理。修改屏幕方向时仅在内存保留当前结果，进程退出后从历史手动恢复；不将凭据写入 Activity Bundle。
 
 ## 边界
 

@@ -1,19 +1,19 @@
-﻿# 账号验证管家
+# 账号验证管家
 
-离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版，最新已发布版为两端 1.9.2，下载见下表；当前源码为 1.10.0 本地测试版，新增登录与 CPA / sub2api 导出，尚未公开发布。
+离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版，两端正式版本统一为 **1.10.0**，新增登录与 CPA / sub2api 文件生成，下载见下表。
 
 统一维护入口：[项目接手与两端差异](docs/项目接手.md)。Windows 源码在仓库根目录，Android 源码在 `android/`；两端使用同一仓库、分别保留版本号。可通过 `./verify.ps1` 一次验证两端，Android 工具链配置见 `local-build.example.psd1`。
 
 | 平台 | 下载 | 文档 |
 | --- | --- | --- |
-| Windows 10 / 11 | [Windows v1.9.2 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) | [Windows 使用说明](使用说明.txt) |
-| Android 8.0+ | [Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) | [Android 构建与使用说明](android/README.md) |
+| Windows 10 / 11 | [Windows v1.10.0 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.10.0/AccountVerificationManager-v1.10.0-win-portable.zip) | [Windows 使用说明](使用说明.txt) |
+| Android 8.0+ | [Android v1.10.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.10.0/AccountVerificationManager-android-v1.10.0.apk) | [Android 构建与使用说明](android/README.md) |
 
-## v1.10.0 登录与 CPA / sub2api（本地测试版）
+## v1.10.0 登录与 CPA / sub2api
 
 从历史管理选择“登录并生成 CPA / sub2api”，支持 ChatGPT / OpenAI（Codex）与 Claude / Anthropic，提供历史账号自动填充、官方网页手动登录两种模式。登录结果仅在内存暂存，成功后分别生成 CPA 或 sub2api JSON。JSON 含登录令牌；原有 `.avmx` 加密历史备份功能不变。
 
-Windows 使用专用 Edge / Chrome 窗口填写，Android 使用系统自动填充建议（需启用服务，Android 9+）。邮箱验证码、人机验证与授权在官方网页完成。解析与 2FA 仍离线运行，登录按需连接官方服务。Windows 已通过 OpenAI 真实登录与双格式文件保存；Claude 按用户要求不再核验真实登录。目标服务导入尚未验收，此测试版尚未发布。见 [使用与验证](docs/v1.10.0登录与文件生成.md)。
+Windows 使用专用 Edge / Chrome 窗口填写，Android 使用系统自动填充建议（需启用服务，Android 9+）。邮箱验证码、人机验证与授权在官方网页完成。解析与 2FA 仍离线运行，登录按需连接官方服务。Windows 已通过 OpenAI 真实登录与双格式文件保存；Claude 按用户要求不再核验真实登录。目标服务导入尚未验收。见 [使用与验证](docs/v1.10.0登录与文件生成.md)。
 
 ## v1.9.2 数字与单位保存期限
 
@@ -69,11 +69,11 @@ Android 已恢复防截图、录屏与最近任务预览保护，复制内容标
 
 ## Android 手机版
 
-Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上，无网络权限、无需 Root。v1.8.0 支持更换 2FA、历史命名、拍照与上传二维码图片，并智能识别账号记录、纯 2FA 密钥和 Authenticator URI；支持 URI 的 SHA1/SHA256/SHA512、6/8 位与实际周期，保留复制及最近 10 条历史。历史使用 Android Keystore 与 AES-256-GCM 在本机加密保存。
+Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上，无需 Root；解析和验证码离线运行，登录按需联网，系统自动填充需 Android 9.0+。v1.8.0 支持更换 2FA、历史命名、拍照与上传二维码图片，并智能识别账号记录、纯 2FA 密钥和 Authenticator URI；支持 URI 的 SHA1/SHA256/SHA512、6/8 位与实际周期，保留复制及最近 10 条历史。历史使用 Android Keystore 与 AES-256-GCM 在本机加密保存。
 
-- [Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) · [发行说明](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.9.2)
+- [Android v1.10.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.10.0/AccountVerificationManager-android-v1.10.0.apk) · [发行说明](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/android-v1.10.0)
 - [Android 项目说明](android/README.md) · [功能对应](android/docs/项目理解与功能对应.md) · [验证报告](android/docs/验证报告.md)
-- 验证：34 组单元测试、107 项真机回归检查通过，发布版 Lint 无错误；安全检查范围见 [恢复验证](docs/安全保护恢复验证.md)。
+- 1.10.0 验证：64 项单元测试、164 项真机回归检查通过，发布版 Lint 无错误。Windows 4,409 项检查与 OpenAI 真实登录、双格式导出通过；详情见 [登录与文件生成](docs/v1.10.0登录与文件生成.md)。
 - 本机 DPAPI 密文不能直接复制到 Android；1.9.0 可通过密码加密导出文件互导 TOTP 记录。卸载会删除手机本地历史。
 
 | 纯密钥 | Authenticator URI | 识别结果 |
@@ -82,15 +82,15 @@ Android 原生应用位于 [`android/`](android/)，支持 Android 8.0 及以上
 
 ## Windows 桌面版
 
-Windows v1.9.2 的智能解析功能与构建说明。
+Windows v1.10.0 的智能解析功能与构建说明。
 
 一个在 Windows 本机运行的账号信息整理与 2FA 智能解析工具。自动识别整条账号记录、纯 Base32 密钥和 Authenticator URI（`otpauth://`），生成对应的验证码并分项复制。
 
-[Windows v1.9.2 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) · [详细使用说明](./使用说明.txt)
+[Windows v1.10.0 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.10.0/AccountVerificationManager-v1.10.0-win-portable.zip) · [详细使用说明](./使用说明.txt)
 
 ## 使用
 
-1. 从 [Windows v1.9.2 发行页](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.9.2) 下载便携压缩包并解压。
+1. 从 [Windows v1.10.0 发行页](https://github.com/Ayc-Gh/AccountVerificationManager/releases/tag/v1.10.0) 下载便携压缩包并解压。
 2. 解压，双击 **账号验证管家.exe**，无需安装或管理员权限。
 3. 粘贴账号记录、纯密钥或 URI，点击 **识别并生成**；也可以点击 **粘贴并解析**，或按 `Ctrl+Enter`。
 4. 点击字段旁的复制按钮，复制账号、密码、密钥或当前验证码。
