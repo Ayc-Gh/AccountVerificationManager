@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <package android:name="com.android.chrome" />
+        <package android:name="com.microsoft.emmx" />
+    </queries>
     <application
         android:name=".ManagerApplication"
         android:allowBackup="false"
@@ -17,6 +22,13 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/qr_photo_paths" />
         </provider>
         <activity android:name=".qr.QrImportActivity" android:exported="false" />
+        <activity android:name=".LoginActivity" android:exported="false" />
+        <activity android:name=".LoginFillActivity" android:exported="false" android:excludeFromRecents="true" />
+        <service android:name=".LoginAutofillService" android:exported="true"
+            android:label="账号验证管家·本次登录填充" android:permission="android.permission.BIND_AUTOFILL_SERVICE">
+            <intent-filter><action android:name="android.service.autofill.AutofillService" /></intent-filter>
+            <meta-data android:name="android.autofill" android:resource="@xml/login_autofill" />
+        </service>
         <activity android:name=".MainActivity" android:exported="true"
             android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
             <intent-filter>

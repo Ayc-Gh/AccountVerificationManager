@@ -61,6 +61,7 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             otpReplacementChecks();
             historyManagementChecks();
             transferFileChecks();
+            loginChecks();
             clearRepository(); main(() -> { click(R.id.nav_parse); click(R.id.clear_input); });
             result.putString("stream", "PASS: " + passed + " on-device checks; Keystore, encrypted persistence, corruption recovery, UI parsing, copies, history, lifecycle.\n");
             finish(Activity.RESULT_OK, result);
@@ -395,7 +396,7 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             click(R.id.nav_parse);
             check(activity.findViewById(R.id.qr_photo).isEnabled() && activity.findViewById(R.id.qr_upload).isEnabled(), "both QR import actions available");
             check((activity.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) != 0, "main window blocks screenshots and recordings");
-            check(BuildConfig.VERSION_NAME.startsWith("1.9.2"), "Android synchronized version 1.9.2");
+            check(BuildConfig.VERSION_NAME.startsWith("1.10.0"), "Android synchronized version 1.10.0");
         });
         String uploadText = "otpauth://totp/Upload:uploaded%40example.com?secret=" + SECRET + "&issuer=Upload&algorithm=SHA256&digits=8&period=60";
         File upload = qrFixture(uploadText);
@@ -758,6 +759,53 @@ public final class AcceptanceInstrumentation extends Instrumentation {
             check(repository.entries().stream().anyMatch(e -> e.account.equals("file@example.com")), "actual open-document route decrypts and imports selected records");
             check(new EncryptedHistoryStore(getTargetContext()).load().size() == 2, "file import survives encrypted storage reload");
         } finally { removeMonitor(monitor); file.delete(); }
+    }
+    @SuppressWarnings("unchecked") private <T> T loginField(LoginActivity login,String name) {
+        try { java.lang.reflect.Field field=LoginActivity.class.getDeclaredField(name);field.setAccessible(true);return (T)field.get(login); } catch (Exception e) { throw new AssertionError(e); }
+    }
+    private void loginChecks() throws Exception {
+        clearRepository();CountDownLatch saved=new CountDownLatch(1);
+        main(()->{try(AccountData d=AccountParser.parse("alice@example.com----SyntheticPassword----"+SECRET,null)){repository.record(d,true,ok->saved.countDown());}});
+        check(saved.await(10,TimeUnit.SECONDS),"login test record saved in isolated QA storage");HistoryEntry entry=repository.entries().get(0);
+        LoginActivity login=(LoginActivity)startActivitySync(new Intent(getTargetContext(),LoginActivity.class).putExtra("record_id",entry.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        main(()->{
+            login.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            check((login.getWindow().getAttributes().flags&WindowManager.LayoutParams.FLAG_SECURE)!=0,"login page remains capture protected");
+            check(this.<Spinner>loginField(login,"provider").getCount()==2&&this.<Spinner>loginField(login,"mode").getCount()==2,"both providers and both modes on Android");
+            check(!this.<Button>loginField(login,"cpa").isEnabled()&&!this.<Button>loginField(login,"sub").isEnabled(),"Android prevents export before authorization");
+            check(!this.<EditText>loginField(login,"callback").isSaveEnabled(),"OAuth callback never saved in Activity state");
+            this.<Spinner>loginField(login,"provider").setSelection(1);this.<Spinner>loginField(login,"mode").setSelection(1);
+        });
+        for(OAuthLogin.Provider provider:OAuthLogin.Provider.values()){
+            LoginFlow flow=new LoginFlow(repository,entry,provider,false);LoginFlow.active=flow;
+            String idToken="header."+java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(LoginJson.encode(LoginJson.object("email","alice@example.com","https://api.openai.com/auth",LoginJson.object("chatgpt_account_id","acct-demo","chatgpt_plan_type","plus"))).getBytes(StandardCharsets.UTF_8))+".synthetic";
+            String tokens=LoginJson.encode(provider==OAuthLogin.Provider.OPENAI?LoginJson.object("access_token","synthetic-access","refresh_token","synthetic-refresh","id_token",idToken,"expires_in",3600):LoginJson.object("access_token","synthetic-access","refresh_token","synthetic-refresh","expires_in",3600,"account",LoginJson.object("email_address","alice@example.com","uuid","acct-demo"),"organization",LoginJson.object("uuid","org-demo")));
+            flow.credential=flow.login.parseTokens(tokens,System.currentTimeMillis());
+            main(()->{try{java.lang.reflect.Field field=LoginActivity.class.getDeclaredField("flow");field.setAccessible(true);field.set(login,flow);flow.listener=login;login.updated();}catch(Exception e){throw new AssertionError(e);}});
+            File exportFolder=new File(getTargetContext().getCacheDir(),"qr-photos");exportFolder.mkdirs();
+            for(boolean sub2api:new boolean[]{false,true}){
+                File exported=new File(exportFolder,"synthetic-login-"+provider+"-"+sub2api+".json");if(exported.exists())exported.delete();
+                ActivityMonitor monitor=new ActivityMonitor(){@Override public ActivityResult onStartActivity(Intent intent){if(!Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction()))return null;Uri uri=FileProvider.getUriForFile(getTargetContext(),getTargetContext().getPackageName()+".qr-photos",exported);return new ActivityResult(Activity.RESULT_OK,new Intent().setData(uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_WRITE_URI_PERMISSION));}};
+                addMonitor(monitor);
+                try{main(()->this.<Button>loginField(login,sub2api?"sub":"cpa").performClick());waitFor(()->exported.length()>50);Map<String,Object> actual=LoginJson.map(LoginJson.decode(Files.readString(exported.toPath())));check(LoginJson.string(actual,"type").equals(sub2api?"sub2api-data":provider==OAuthLogin.Provider.OPENAI?"codex":"claude"),"actual document route writes login JSON "+provider+" "+sub2api);waitFor(()->!this.<Boolean>loginField(login,"exporting"));}finally{removeMonitor(monitor);exported.delete();}
+            }
+            check(LoginJson.string(LoginJson.map(LoginJson.decode(flow.credential.export(false))),"type").equals(provider==OAuthLogin.Provider.OPENAI?"codex":"claude"),"device CPA export shape "+provider);
+            check(LoginJson.string(LoginJson.map(LoginJson.decode(flow.credential.export(true))),"type").equals("sub2api-data"),"device sub2api export shape "+provider);
+            check(flow.current()!=null,"active login bound to current history "+provider);flow.close();
+            check(LoginFlow.active==null&&flow.credential==null&&flow.current()==null,"closing login clears credentials and staged autofill "+provider);
+        }
+        check(!LoginAutofillService.trusted(getTargetContext(),getTargetContext().getPackageName()),"autofill rejects unsigned lookalike app identity");
+        LoginFlow denial=new LoginFlow(repository,entry,OAuthLogin.Provider.OPENAI,false);LoginFlow.active=denial;
+        denial.complete(denial.login.redirect()+"?error=access_denied&state=wrong");
+        check(denial.current()!=null&&LoginFlow.active==denial,"unrelated denial cannot cancel current login");
+        denial.complete(denial.login.redirect()+"?error=access_denied&state="+denial.login.state);
+        check(denial.current()==null&&LoginFlow.active==null,"official denial clears current login immediately");
+        LoginFlow flow=new LoginFlow(repository,entry,OAuthLogin.Provider.OPENAI,true);LoginFlow.active=flow;
+        main(()->{try{java.lang.reflect.Field field=LoginActivity.class.getDeclaredField("flow");field.setAccessible(true);field.set(login,flow);flow.listener=login;}catch(Exception e){throw new AssertionError(e);}});
+        CountDownLatch deleted=new CountDownLatch(1);main(()->repository.delete(entry.id,ok->deleted.countDown()));check(deleted.await(10,TimeUnit.SECONDS)&&flow.current()==null,"deleted record invalidates staged login");
+        main(login::updated);waitFor(()->LoginFlow.active==null);
+        main(()->{check(!this.<Button>loginField(login,"cpa").isEnabled()&&!this.<Button>loginField(login,"sub").isEnabled(),"deleted record disables Android export");login.finish();});
+        waitFor(login::isDestroyed);
     }
     private void clearRepository() throws Exception {
         CountDownLatch latch = new CountDownLatch(1); boolean[] ok = {false};

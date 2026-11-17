@@ -1,9 +1,12 @@
-# 账号验证管家维护约定
+﻿# 账号验证管家维护约定
 
 这是 Windows 与 Android 的统一维护仓库。先读 `docs/项目接手.md`，再按任务检查实际代码与 Git 状态。Windows 在根目录，Android 在 `android/`。两端使用独立原生实现，不能假定已有功能完全相同。
 
-2026-11-16 当前版本为两端 1.9.2，发行标签为 `v1.9.2` / `android-v1.9.2`。保存期限改为数字 + 分/时/天/周/月，详见 `docs/v1.9.2保存期限与发布验证.md`。1.9.1 修复 Windows 管理与多二维码菜单提前释放异常，详见 `docs/v1.9.1管理菜单修复.md`。到期清理、历史删除/置顶及多选密码加密导入导出已实现，详见 `docs/v1.9.0历史管理与加密导入导出.md`。用户不要求旧数据兼容，现有 v1/v2/v3 读取逻辑仍保留；当前写入 v4。
+2026-11-17 当前源码为两端 1.10.0 本地测试版（尚未发布），加入登录与 CPA / sub2api，详见 `docs/v1.10.0登录与文件生成.md`。最新已发布版为 1.9.2，发行标签为 `v1.9.2` / `android-v1.9.2`。保存期限改为数字 + 分/时/天/周/月，详见 `docs/v1.9.2保存期限与发布验证.md`。1.9.1 修复 Windows 管理与多二维码菜单提前释放异常，详见 `docs/v1.9.1管理菜单修复.md`。到期清理、历史删除/置顶及多选密码加密导入导出已实现，详见 `docs/v1.9.0历史管理与加密导入导出.md`。用户不要求旧数据兼容，现有 v1/v2/v3 读取逻辑仍保留；当前写入 v4。
 
+- 登录是按需联网的独立功能，保留离线解析。OAuth PKCE/state 只接受本次 localhost 完整回调，校验所选历史邮箱与官方返回身份；一次性授权码禁止重放，令牌交换禁止重定向，不记录授权码、密码、密钥或令牌。
+- Windows 只自动填充专用临时 Edge/Chrome 的精确 HTTPS 官方源；Android 只给签名校验后的 Chrome/Edge 官方 HTTPS 源提供建议，点击时重新校验记录并计算 TOTP。邮箱验证码/人机验证/授权需网页完成，不自行确认授权。
+- 登录令牌只在内存暂存，不写历史；关闭、记录失效、15 分钟会话超时或令牌过期应清除。CPA/sub2api JSON 必须由用户显式保存，含明文令牌，不要假称为 .avmx 加密备份；格式要核对两个上游的不同字段，Claude CPA 为 organization_uuid，sub2api 为 org_uuid。真实登录与服务端导入未跑通前只能报告结构/模拟验收，不可称已实测登录成功。
 - 本仓库是唯一维护入口，Windows 在根目录，Android 在 `android/`。旧独立工程只作为历史快照，不再用于开发；本机目录映射保存在 Git 忽略的 `.local/` 中。
 - 共同需求默认检查两端影响，并分别实现、验证；保留用户明确指定的单平台任务范围。
 - 保持最多十条加密历史，置顶优先保留，重复识别在所属分组内前移并保留名称/期限/置顶；十条全置顶时拒绝新增，导入容量超限整批失败。保存后按返回记录 ID 或实际内容匹配选择记录，禁止假定列表首项就是新保存记录。
@@ -17,7 +20,7 @@
 - Windows 下拉菜单不能在 Closed 或点击回调里立即 Dispose；复用随窗口释放的 DeferredContextMenu，并排队执行会打开弹窗或重建历史控件的动作。回归需实际触发 ToolStripItem.PerformClick，包含取消、重复打开与窗口关闭。
 - Android 正式包名保持 `cn.local.accountmanager`，测试包保持 `cn.local.accountmanager.qa`。保留原 `android/signing/`，已发布应用不能换签名覆盖升级。
 - `local-build.psd1`、`.local/`、`releases/`、Android 本机配置和签名目录必须保持 Git 忽略；任何打包或提交前检查排除情况。
-- `verify.ps1 -Platform Windows` 运行 Windows 构建与五组检查（含二维码）；`verify.ps1 -Platform Android -Offline` 运行 Android 单元测试、发布 Lint、签名构建与 APK 验证。默认不安装或操作正式手机应用。
+- `verify.ps1 -Platform Windows` 运行 Windows 构建、核心/智能解析/二维码/历史/OAuth/UI 检查；若安装 Node，再运行浏览器填充脚本检查；`verify.ps1 -Platform Android -Offline` 运行 Android 单元测试、发布 Lint、签名构建与 APK 验证。默认不安装或操作正式手机应用。
 - Android 真机验收使用独立 QA 包和虚构数据；旧报告的 60 项真机检查不能表述为本次重新执行。
 - 从 1.6.0 起，用户要求两端可见版本号同步；修改 Windows AssemblyInfo、窗口版本和 Android versionName/versionCode，并检查使用说明。标签仍分别使用 `vX.Y.Z` 和 `android-vX.Y.Z`。发布是独立任务，不能将本地构建表述为已经发布。
 - Android 按用户最新要求禁止截图和录屏，主界面、二维码导入及应用对话框均应用 FLAG_SECURE；Android 13+ 禁用最近任务截图。复制内容设置敏感标记隐藏系统预览。不得为了测试截图而临时取消这些保护。二维码图片仍在本机解码，拍照与上传功能保留。

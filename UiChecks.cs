@@ -26,6 +26,38 @@ internal static class UiChecks
         form.StartPosition = FormStartPosition.Manual; form.Location = new System.Drawing.Point(-20000, -20000);
         form.Show(); Application.DoEvents(); Layout(form);
     }
+    private static void CheckLoginDialog(string checks, HistoryStore store)
+    {
+        using (AccountData d = AccountParser.Parse("alice@example.com|SyntheticPassword|" + Secret, "|")) store.Record(d, false);
+        HistoryEntry entry = store.Entries[0]; bool available = true;
+        using (LoginDialog dialog = new LoginDialog(delegate { return available ? entry : null; })) {
+            ShowOffscreen(dialog);
+            Check(Field<ComboBox>(dialog, "provider").Items.Count == 2 && Field<ComboBox>(dialog, "mode").Items.Count == 2, "both providers and both login modes");
+            Check(!Field<Control>(dialog, "cpa").Enabled && !Field<Control>(dialog, "sub").Enabled && !Field<Control>(dialog, "finish").Enabled, "cannot export without successful login");
+            Check(Field<TextBox>(dialog, "callback").UseSystemPasswordChar, "callback code masked in editor");
+            foreach (string name in new string[] {"provider", "mode", "start", "finish", "callback", "cpa", "sub", "feedback"}) Check(Fits(Field<Control>(dialog, name)), "login control fits: " + name);
+            Field<ComboBox>(dialog, "provider").SelectedIndex = 1; Field<ComboBox>(dialog, "mode").SelectedIndex = 1;
+            Check(Field<ComboBox>(dialog, "provider").SelectedIndex == 1 && Field<ComboBox>(dialog, "mode").SelectedIndex == 1, "manual Claude login selectable");
+            Preview(dialog, checks, "windows-v1.10.0-login.png");
+            OAuthLogin flow = new OAuthLogin(LoginProvider.Claude, entry.Account);
+            typeof(LoginDialog).GetField("login", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(dialog, flow);
+            typeof(LoginDialog).GetField("credential", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(dialog, new LoginCredential(LoginProvider.Claude, entry.Account, "synthetic-access", "synthetic-refresh", "", "acct-demo", "", "", "org-demo", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), flow.ClientId));
+            Field<Control>(dialog, "cpa").Enabled = true; Field<Control>(dialog, "sub").Enabled = true;
+            available = false;
+            typeof(Timer).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Field<Timer>(dialog, "expiry"), new object[] {EventArgs.Empty});
+            Check(Field<LoginCredential>(dialog, "credential") == null && Field<OAuthLogin>(dialog, "login") == null && !Field<Control>(dialog, "cpa").Enabled && !Field<Control>(dialog, "sub").Enabled, "expired or deleted record clears login and export state");
+            Check(Field<ComboBox>(dialog, "provider").Enabled && Field<ComboBox>(dialog, "mode").Enabled, "invalidated login can restart or change mode");
+            dialog.Close();
+        }
+        using (LoginDialog dialog = new LoginDialog(delegate { throw new IOException("synthetic history read failure"); })) {
+            ShowOffscreen(dialog);
+            typeof(LoginDialog).GetField("login", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(dialog, new OAuthLogin(LoginProvider.OpenAI, entry.Account));
+            typeof(Timer).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Field<Timer>(dialog, "expiry"), new object[] {EventArgs.Empty});
+            Check(Field<OAuthLogin>(dialog, "login") == null && !Field<Control>(dialog, "cpa").Enabled, "history read failure clears login without an unhandled timer exception");
+            Check(Field<Label>(dialog, "feedback").Text.Contains("失效"), "history read failure explains disabled login state");
+            dialog.Close();
+        }
+    }
     private static void CheckNameDialog(string checks, HistoryStore store)
     {
         store.Load(); HistoryEntry entry = store.Entries[0];
@@ -371,6 +403,7 @@ internal static class UiChecks
             CheckTransferDialogs(checks, store);
             CheckHistoryManagement(checks, path);
             CheckContextMenuLifetime(path);
+            CheckLoginDialog(checks, store);
             Console.WriteLine("PASS: " + passed + " UI integration checks; compact layout, history navigation, naming, live OTP, QR import, minimum size and Escape behavior.");
         }
         catch (Exception error)

@@ -1,0 +1,59 @@
+package cn.local.accountmanager;
+
+import cn.local.accountmanager.core.*;
+import cn.local.accountmanager.storage.HistoryRepository;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/** A single bounded in-memory login, retained through Activity rotations. */
+final class LoginFlow implements AutoCloseable {
+    interface Listener { void updated(); }
+    static volatile LoginFlow active;
+    final OAuthLogin login;
+    final String recordId, original;
+    final HistoryRepository history;
+    final boolean autofill;
+    volatile OAuthLogin.Credential credential;
+    volatile String notice="请在官方网页完成登录与授权。";
+    volatile Listener listener;
+    volatile boolean closed;
+    final AtomicBoolean exchanging=new AtomicBoolean();
+    private ServerSocket server;
+    private final android.os.Handler expiry=new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable checkExpiry=new Runnable(){@Override public void run(){if(closed)return;if(current()==null||(credential!=null&&System.currentTimeMillis()>=credential.expires)){Listener previous=listener;close();if(previous!=null)previous.updated();}else expiry.postDelayed(this,1000);}};
+    LoginFlow(HistoryRepository history,HistoryEntry entry,OAuthLogin.Provider provider,boolean autofill){this.history=history;recordId=entry.id;original=entry.originalText();login=new OAuthLogin(provider,entry.account);this.autofill=autofill;expiry.postDelayed(checkExpiry,1000);}
+    HistoryEntry current(){HistoryEntry e=history.failed()?null:history.find(recordId);return !closed&&System.currentTimeMillis()<login.deadline&&e!=null&&e.originalText().equals(original)?e:null;}
+    void notifyChange(){Listener l=listener;if(l!=null)l.updated();}
+    void startServer()throws IOException {
+        server=new ServerSocket();server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),login.port()),4);server.setSoTimeout(1000);
+        new Thread(()->{
+            while(!closed&&current()!=null){
+                try(Socket socket=server.accept()){
+                    socket.setSoTimeout(2000);InputStream input=socket.getInputStream();ByteArrayOutputStream bytes=new ByteArrayOutputStream();int value;
+                    while(bytes.size()<16384&&(value=input.read())!=-1){bytes.write(value);if(bytes.size()>=4&&bytes.toString(StandardCharsets.US_ASCII.name()).endsWith("\r\n\r\n"))break;}
+                    String[] request=bytes.toString(StandardCharsets.US_ASCII.name()).split("\r\n",2)[0].split(" ");String callback=request.length==3&&request[0].equals("GET")&&request[1].startsWith("/")&&!request[1].startsWith("//")?"http://localhost:"+login.port()+request[1]:"";
+                    boolean valid=login.isDenial(callback);try{login.validateCallback(callback);valid=true;}catch(IllegalArgumentException e){/* A verified denial is delivered to the UI too. */}
+                    byte[] body=(valid?"<!doctype html><meta charset=utf-8><title>账号验证管家</title>已收到回调，请回到账号验证管家查看结果。":"Invalid or expired callback.").getBytes(StandardCharsets.UTF_8);
+                    String header="HTTP/1.1 "+(valid?"200 OK":"400 Bad Request")+"\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: "+body.length+"\r\n\r\n";
+                    socket.getOutputStream().write(header.getBytes(StandardCharsets.US_ASCII));socket.getOutputStream().write(body);if(valid)complete(callback);
+                }catch(IOException ignored){if(closed||server.isClosed())break;}
+            }
+            stopServer();
+        },"login-callback").start();
+    }
+    void complete(String address){
+        if(current()==null||credential!=null)return;
+        try{login.validateCallback(address);}catch(IllegalArgumentException e){notice=e.getMessage();if(login.isDenial(address)){Listener previous=listener;close();if(previous!=null)previous.updated();}else notifyChange();return;}
+        if(!exchanging.compareAndSet(false,true))return;notice="正在向官方授权服务交换凭据…";notifyChange();
+        new Thread(()->{
+            try{OAuthLogin.Credential c=login.exchange(address);if(current()!=null){credential=c;notice="登录成功："+c.email+"。可分别生成 CPA 和 sub2api 文件。";}}
+            catch(IllegalArgumentException e){notice=e.getMessage()+" 请重新开始登录。";}
+            catch(Exception e){notice="授权交换失败，请检查网络后重新开始登录。";}
+            finally{exchanging.set(false);stopServer();notifyChange();}
+        },"login-exchange").start();
+    }
+    private void stopServer(){try{if(server!=null)server.close();}catch(IOException ignored){}}
+    @Override public void close(){closed=true;credential=null;listener=null;expiry.removeCallbacks(checkExpiry);stopServer();if(active==this)active=null;}
+}

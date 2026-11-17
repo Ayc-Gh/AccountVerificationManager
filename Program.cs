@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Drawing;
@@ -69,7 +69,7 @@ namespace AccountSplit2FA
         public MainForm(string historyFile)
         {
             history = new HistoryStore(historyFile);
-            Text = "账号验证管家 v1.9.2";
+            Text = "账号验证管家 v1.10.0";
             ClientSize = new Size(860, 660);
             MinimumSize = new Size(780, 660);
             StartPosition = FormStartPosition.CenterScreen; BackColor = Theme.Background;
@@ -395,7 +395,7 @@ namespace AccountSplit2FA
             catch (ExternalException) { SetStatus("剪贴板正被其他程序占用，请重新点击复制。", true); }
         }
         private void SetIdleStatus() {
-            status.Text = "●  本地离线运行 · 最近 10 条记录加密保存"; status.ForeColor = Theme.Muted; transientStatus = false;
+            status.Text = "●  离线解析 · 登录按需联网 · 历史本机加密"; status.ForeColor = Theme.Muted; transientStatus = false;
             if (historyStatus != null) { historyStatus.Text = "名称与记录在本机加密保存"; historyStatus.ForeColor = Theme.Muted; }
         }
         private void SetStatus(string text, bool error) {
@@ -676,6 +676,10 @@ namespace AccountSplit2FA
                 menu.AddAction("删除记录", delegate {
                     if (MessageBox.Show(this, "删除这条记录及其账号、密码和 2FA 密钥？", "删除记录", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) == DialogResult.OK)
                         ManageHistory(delegate { history.Delete(id); });
+                });
+                menu.AddAction("登录并生成 CPA / sub2api", delegate {
+                    string original = entry.OriginalText();
+                    using (LoginDialog dialog = new LoginDialog(delegate { HistoryEntry latest = history.Find(id); return latest != null && latest.OriginalText() == original ? latest : null; })) dialog.ShowDialog(this);
                 });
                 menu.Show(anchor, new Point(0, anchor.Height));
             } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史读取失败，请重试。", true); }

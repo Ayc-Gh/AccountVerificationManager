@@ -13,8 +13,8 @@ android {
         applicationId = "cn.local.accountmanager"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10902
-        versionName = "1.9.2"
+        versionCode = 11000
+        versionName = "1.10.0"
         testInstrumentationRunner = "cn.local.accountmanager.AcceptanceInstrumentation"
     }
     if (!signing.isEmpty) {

@@ -1,6 +1,6 @@
-# 账号验证管家 Android
+﻿# 账号验证管家 Android
 
-账号验证管家的 Android 原生应用。当前版本 1.9.2 支持“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
+账号验证管家的 Android 原生应用。当前源码为 1.10.0 本地测试版，新增 OpenAI / Claude 官方网页授权、历史账号自动填充以及 CPA / sub2api JSON 导出。Android 真实网页登录与目标服务导入未验收；Windows OpenAI 真实登录与双格式保存已通过。Claude 按用户要求停止真实账号核验，尚未发布。最新已发布的 1.9.2 支持“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
 
 [Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) · [Windows v1.9.2](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
 
@@ -61,7 +61,7 @@ Windows PowerShell 7、JDK 21、Android SDK platform 37 和 build-tools 37.0.0�
 .\build.ps1 -Offline
 ```
 
-脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前为 `release/账号验证管家-v1.9.2.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
+脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前本地构建为 `release/账号验证管家-v1.10.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
 
 ## 真实设备测试
 

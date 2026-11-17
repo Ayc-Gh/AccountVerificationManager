@@ -1,6 +1,6 @@
-# 账号验证管家
+﻿# 账号验证管家
 
-离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版，两端版本统一为 1.9.2，下载见下表。
+离线拆分账号、密码和 2FA 密钥，显示实时验证码，支持一键复制和最近十条加密历史。目前提供 Windows 桌面版和 Android 手机版，最新已发布版为两端 1.9.2，下载见下表；当前源码为 1.10.0 本地测试版，新增登录与 CPA / sub2api 导出，尚未公开发布。
 
 统一维护入口：[项目接手与两端差异](docs/项目接手.md)。Windows 源码在仓库根目录，Android 源码在 `android/`；两端使用同一仓库、分别保留版本号。可通过 `./verify.ps1` 一次验证两端，Android 工具链配置见 `local-build.example.psd1`。
 
@@ -8,6 +8,12 @@
 | --- | --- | --- |
 | Windows 10 / 11 | [Windows v1.9.2 便携版](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.9.2/AccountVerificationManager-v1.9.2-win-portable.zip) | [Windows 使用说明](使用说明.txt) |
 | Android 8.0+ | [Android v1.9.2 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.9.2/AccountVerificationManager-android-v1.9.2.apk) | [Android 构建与使用说明](android/README.md) |
+
+## v1.10.0 登录与 CPA / sub2api（本地测试版）
+
+从历史管理选择“登录并生成 CPA / sub2api”，支持 ChatGPT / OpenAI（Codex）与 Claude / Anthropic，提供历史账号自动填充、官方网页手动登录两种模式。登录结果仅在内存暂存，成功后分别生成 CPA 或 sub2api JSON。JSON 含登录令牌；原有 `.avmx` 加密历史备份功能不变。
+
+Windows 使用专用 Edge / Chrome 窗口填写，Android 使用系统自动填充建议（需启用服务，Android 9+）。邮箱验证码、人机验证与授权在官方网页完成。解析与 2FA 仍离线运行，登录按需连接官方服务。Windows 已通过 OpenAI 真实登录与双格式文件保存；Claude 按用户要求不再核验真实登录。目标服务导入尚未验收，此测试版尚未发布。见 [使用与验证](docs/v1.10.0登录与文件生成.md)。
 
 ## v1.9.2 数字与单位保存期限
 
@@ -113,7 +119,7 @@ otpauth://totp/Example:demo%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJ
 - **最近 10 条历史**：成功识别后自动保存，完全相同的记录会置顶，重启后仍可查看。
 - **历史快捷复制**：每条记录均可单独复制账号、密码、当前验证码，或复制整组三项。
 - **恢复历史记录**：点击账号名称或时间，恢复登录信息及解析模式。
-- **本地加密**：历史记录使用 Windows 当前用户的 DPAPI 加密，应用不联网。
+- **本地加密**：历史记录使用 Windows 当前用户的 DPAPI 加密。解析与验证码离线运行，登录按需联网。
 - **紧凑界面**：自动与手动模式切换、密码显示控制、验证码卡片、复制成功反馈及同窗口切换的历史页。
 
 ## 格式说明

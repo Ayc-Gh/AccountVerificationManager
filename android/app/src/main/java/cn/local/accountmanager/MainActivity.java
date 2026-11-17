@@ -112,7 +112,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         Glyph shield = new Glyph("shield", accent); header.addView(shield, size(36, 40));
         LinearLayout titles = vertical(); titles.setPadding(dp(10), 0, 0, 0);
         titles.addView(text("账号验证管家", 22, ink, true));
-        TextView subtitle = text("本地离线  ·  安心管理每一次验证", 11, muted, false);
+        TextView subtitle = text("离线解析  ·  登录按需联网", 11, muted, false);
         titles.addView(subtitle); header.addView(titles, weight());
         TextView help = button("?", subtle, ink, 18, this::showHelp); help.setContentDescription("使用指南与关于");
         header.addView(help, size(44, 44)); root.addView(header);
@@ -120,7 +120,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         parsePage = scroll(); historyPage = scroll(); pages.addView(parsePage); pages.addView(historyPage);
         LinearLayout content = vertical(); content.setPadding(dp(20), dp(6), dp(20), dp(24)); parsePage.addView(content);
         buildInput(content); buildOtp(content); buildDetails(content);
-        TextView privacy = text("●  全程离线处理，最近 10 条记录在本机加密保存", 11, muted, false);
+        TextView privacy = text("●  离线解析，历史本机加密；登录按需联网", 11, muted, false);
         privacy.setGravity(Gravity.CENTER); privacy.setPadding(0, dp(20), 0, dp(6)); content.addView(privacy);
         LinearLayout historyContent = vertical(); historyContent.setPadding(dp(20), dp(6), dp(20), dp(24)); historyPage.addView(historyContent);
         buildHistory(historyContent);
@@ -375,12 +375,13 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     private void manageHistory(String id) {
         HistoryEntry e = history.find(id); if (e == null) { changed(); return; }
         PrivacyProtection.show(new AlertDialog.Builder(this).setTitle(e.displayName())
-                .setItems(new String[]{"管理到期时间", e.pinned ? "取消置顶" : "置顶", "删除记录"}, (dialog, which) -> {
+                .setItems(new String[]{"管理到期时间", e.pinned ? "取消置顶" : "置顶", "删除记录", "登录并生成 CPA / sub2api"}, (dialog, which) -> {
                     if (which == 0) ExpirationEditor.show(this, null, e.expiresAt, true, value -> history.manage(id, value == null ? 0 : value.expiresAt(System.currentTimeMillis()), null, this::managementResult));
                     if (which == 1) history.manage(id, null, !e.pinned, this::managementResult);
                     if (which == 2) PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("删除记录？")
                             .setMessage("将删除这条记录及其账号、密码和 2FA 密钥。")
                             .setNegativeButton("取消", null).setPositiveButton("删除", (d, w) -> history.delete(id, this::managementResult)));
+                    if (which == 3) startActivity(new Intent(this, LoginActivity.class).putExtra("record_id", id));
                 }).setNegativeButton("取消", null));
     }
 
@@ -597,7 +598,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
     }
     private void showHelp() {
         PrivacyProtection.show(new AlertDialog.Builder(this).setTitle("账号验证管家  " + BuildConfig.VERSION_NAME)
-                .setMessage("可拍照或上传二维码图片识别 2FA，也可直接粘贴账号记录、纯 Base32 2FA 密钥或 Authenticator URI，点击“识别并生成”。\n\n账号记录沿用连续 3 个及以上符号自动分隔；复杂边界可手动指定。密码原文完整保留。\n\n纯密钥使用 SHA1 / 6 位 / 30 秒；支持大小写、分组空白和标准末尾填充。\n\n支持 otpauth://totp/ URI，识别账号和发行方，并读取 algorithm、digits、period。算法支持 SHA1/SHA256/SHA512，位数支持 6/8，周期为正整数秒。缺省值是 SHA1 / 6 位 / 30 秒。HOTP 和批量迁移 URI 暂不支持。\n\n验证码按 URI 实际参数刷新，复制时重新计算。请保持手机系统时间准确。\n\n最近 10 条记录在本机加密保存，升级保留旧历史。纯密钥和 URI 不会虚构密码；历史只显示适用的复制按钮。“复制全部”含密钥，“整组”不含密钥。\n\n全程离线；卸载会删除历史。复制内容受系统和输入法剪贴板设置影响。")
+                .setMessage("可拍照或上传二维码图片识别 2FA，也可直接粘贴账号记录、纯 Base32 2FA 密钥或 Authenticator URI，点击“识别并生成”。\n\n账号记录沿用连续 3 个及以上符号自动分隔；复杂边界可手动指定。密码原文完整保留。\n\n纯密钥使用 SHA1 / 6 位 / 30 秒；支持大小写、分组空白和标准末尾填充。\n\n支持 otpauth://totp/ URI，识别账号和发行方，并读取 algorithm、digits、period。算法支持 SHA1/SHA256/SHA512，位数支持 6/8，周期为正整数秒。缺省值是 SHA1 / 6 位 / 30 秒。HOTP 和批量迁移 URI 暂不支持。\n\n验证码按 URI 实际参数刷新，复制时重新计算。请保持手机系统时间准确。\n\n最近 10 条记录在本机加密保存，升级保留旧历史。纯密钥和 URI 不会虚构密码；历史只显示适用的复制按钮。“复制全部”含密钥，“整组”不含密钥。\n\n解析与验证码离线运行；登录功能按需连接官方网页和授权服务，可生成 CPA / sub2api 文件。卸载会删除历史。复制内容受系统和输入法剪贴板设置影响。")
                 .setPositiveButton("知道了", null));
     }
     private void setStatus(String message, boolean error) {
