@@ -58,18 +58,21 @@ namespace AccountSplit2FA
         private bool transferBusy;
         private RetentionPeriod newRetention;
         private DateTime nextHistoryRefresh;
-        private string historyStamp = "";
+        private IList<HistoryEntry> displayedHistory;
         private long qrImportVersion;
-        private Guid selectedHistory = Guid.Empty;
+        private HistoryEntry selectedRecord;
+        private readonly Action<string> writeClipboard;
         private bool historyExpanded;
         private bool codeFontPending;
         private readonly Dictionary<int, Font> codeFonts = new Dictionary<int, Font>();
 
         public MainForm() : this(null) { }
-        public MainForm(string historyFile)
+        public MainForm(string historyFile) : this(historyFile, value => Clipboard.SetText(value, TextDataFormat.UnicodeText)) { }
+        internal MainForm(string historyFile, Action<string> writeClipboard)
         {
+            this.writeClipboard = writeClipboard;
             history = new HistoryStore(historyFile);
-            Text = "账号验证管家 v1.10.0";
+            Text = "账号验证管家 v1.10.1";
             ClientSize = new Size(860, 660);
             MinimumSize = new Size(780, 660);
             StartPosition = FormStartPosition.CenterScreen; BackColor = Theme.Background;
@@ -204,9 +207,9 @@ namespace AccountSplit2FA
             content.Controls.Add(CreateField("账号", "复制账号", out account, out accountCopy), 0, 1);
             content.Controls.Add(CreateField("密码", "复制密码", out password, out passwordCopy), 0, 2);
             content.Controls.Add(CreateField("2FA 密钥", "复制密钥", out secret, out secretCopy), 0, 3);
-            accountCopy.Click += delegate { if (data != null) Copy(data.Account, "账号", accountCopy); };
-            passwordCopy.Click += delegate { if (data != null) Copy(data.Password, "密码", passwordCopy); };
-            secretCopy.Click += delegate { if (data != null) Copy(data.Secret, "2FA 密钥", secretCopy); };
+            accountCopy.Click += delegate { Copy(item => item.Account, "账号", accountCopy); };
+            passwordCopy.Click += delegate { Copy(item => item.Password, "密码", passwordCopy); };
+            secretCopy.Click += delegate { Copy(item => item.Secret, "2FA 密钥", secretCopy); };
             card.Controls.Add(content); return card;
         }
         private Control CreateCodeCard()
@@ -236,12 +239,7 @@ namespace AccountSplit2FA
             content.Controls.Add(counterOptions, 0, 3);
             progress = new ProgressTrack { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 10) }; content.Controls.Add(progress, 0, 4);
             codeCopy = Button("复制验证码", ButtonKind.OnDark, 240); codeCopy.Dock = DockStyle.Fill; codeCopy.Glyph = ButtonGlyph.Copy; codeCopy.Font = Theme.Font(10, FontStyle.Bold);
-            codeCopy.Click += delegate {
-                if (data == null) return;
-                try { RefreshHotp(); UpdateCode(); Copy(data.Code(Totp.UnixNow()), "验证码", codeCopy); }
-                catch (InvalidOperationException error) { SetStatus(error.Message, true); }
-                catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取最新计数器，请重新打开历史记录。", true); }
-            };
+            codeCopy.Click += delegate { Copy(item => item.Code(Totp.UnixNow()), "验证码", codeCopy); };
             content.Controls.Add(codeCopy, 0, 5); card.Controls.Add(content); return card;
         }
         private Control CreateFooter()
@@ -251,12 +249,7 @@ namespace AccountSplit2FA
             status = Label("", 8.5F, FontStyle.Regular, Theme.Muted); status.AutoEllipsis = true; footer.Controls.Add(status, 0, 0);
             Label shortcut = Label("Ctrl+Enter  解析", 8, FontStyle.Regular, Theme.Muted); shortcut.TextAlign = ContentAlignment.MiddleRight; shortcut.Padding = new Padding(0, 0, 14, 0); footer.Controls.Add(shortcut, 1, 0);
             allCopy = Button("复制全部", ButtonKind.Ghost, 120); allCopy.Dock = DockStyle.Fill; allCopy.Glyph = ButtonGlyph.Copy; allCopy.AccessibleName = "复制全部结果";
-            allCopy.Click += delegate {
-                if (data == null) return;
-                try { RefreshHotp(); Copy(data.CopyText(Totp.UnixNow(), true), "全部结果", allCopy); }
-                catch (InvalidOperationException error) { SetStatus(error.Message, true); }
-                catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法读取最新计数器，请重新打开历史记录。", true); }
-            };
+            allCopy.Click += delegate { Copy(item => item.CopyText(Totp.UnixNow(), true), "全部结果", allCopy); };
             footer.Controls.Add(allCopy, 2, 0); return footer;
         }
         private Control CreateField(string label, string accessibleCopy, out TextBox value, out ActionButton copy)
@@ -347,14 +340,13 @@ namespace AccountSplit2FA
             qrImportVersion++;
             placeholder.Visible = input.TextLength == 0;
             ResetResult();
-            selectedHistory = Guid.Empty;
             try {
                 data = SmartParser.Parse(input.Text, automatic ? null : manualSeparator.Text);
                 ShowResult();
                 string kind = data.InputKind == InputKind.Secret ? "纯 2FA 密钥" : data.InputKind == InputKind.AuthenticatorUri ? "Authenticator URI" : data.UsesUri ? "账号记录 + Authenticator URI" : "账号记录";
                 SetStatus("已识别 " + kind + (data.InputKind == InputKind.Record ? " · 分隔符 " + SeparatorPreview(data.FirstSeparator) + (data.FirstSeparator == data.LastSeparator ? "" : " / " + SeparatorPreview(data.LastSeparator)) : ""), false);
                 try {
-                    HistoryEntry saved = history.RecordWithRetention(data, automatic, newRetention); selectedHistory = saved.Id; newRetention = null; RefreshExpiryButton(); replaceOtp.Enabled = true; RefreshHistory();
+                    selectedRecord = history.RecordWithRetention(data, automatic, newRetention); newRetention = null; RefreshExpiryButton(); replaceOtp.Enabled = true; RefreshHistory();
                     nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
                 } catch (InvalidOperationException error) { SetStatus(error.Message, true); }
                 catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus(error is FormatException ? error.Message : "解析成功，但历史记录保存失败；请检查本机历史文件。", true); }
@@ -366,12 +358,12 @@ namespace AccountSplit2FA
             accountCopy.Enabled = enabled && data != null && data.Account.Length > 0;
             passwordCopy.Enabled = enabled && data != null && data.Password.Length > 0;
             secretCopy.Enabled = codeCopy.Enabled = allCopy.Enabled = enabled;
-            replaceOtp.Enabled = enabled && selectedHistory != Guid.Empty;
+            replaceOtp.Enabled = enabled && selectedRecord != null;
         }
-        private void ClearInput() { selectedHistory = Guid.Empty; newRetention = null; RefreshExpiryButton(); qrImportVersion++; input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
+        private void ClearInput() { newRetention = null; RefreshExpiryButton(); qrImportVersion++; input.Clear(); ResetResult(); SetStatus("已清空当前内容", false); input.Focus(); }
         private void ResetResult()
         {
-            if (data != null) { data.Dispose(); data = null; } lastStep = -1;
+            if (data != null) { data.Dispose(); data = null; } selectedRecord = null; lastStep = -1;
             account.Text = password.Text = secret.Text = "等待解析"; account.ForeColor = password.ForeColor = secret.ForeColor = Color.FromArgb(160, 172, 190);
             password.UseSystemPasswordChar = false;
             codeLabel.Text = "--- ---"; codeLabel.ForeColor = Color.FromArgb(121, 151, 197); codeLabel.AccessibleName = "当前六位验证码，等待解析";
@@ -388,11 +380,17 @@ namespace AccountSplit2FA
             countdown.ForeColor = remaining <= 5 ? Color.FromArgb(255, 199, 112) : Color.FromArgb(174, 190, 216);
             progress.BarColor = remaining <= 5 ? Color.FromArgb(255, 194, 99) : Color.FromArgb(123, 164, 255); progress.Fraction = remaining / (float)data.Period;
         }
-        private void Copy(string value, string label, ActionButton button)
+        private void Copy(Func<AccountData, string> value, string label, ActionButton button)
         {
-            if (!EnsureCurrentRecord()) return;
-            try { Clipboard.SetText(value, TextDataFormat.UnicodeText); button.ShowCopied(); SetStatus(label + "已复制", false); }
+            if (data == null) return;
+            try {
+                if (selectedRecord != null) SynchronizeSelectedRecord(history.Find(selectedRecord.Id));
+                if (data == null) return;
+                UpdateCode();
+                writeClipboard(value(data)); button.ShowCopied(); SetStatus(label + "已复制", false);
+            }
             catch (ExternalException) { SetStatus("剪贴板正被其他程序占用，请重新点击复制。", true); }
+            catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法确认历史状态，请重试。", true); }
         }
         private void SetIdleStatus() {
             status.Text = "●  离线解析 · 登录按需联网 · 历史本机加密"; status.ForeColor = Theme.Muted; transientStatus = false;
@@ -476,7 +474,7 @@ namespace AccountSplit2FA
             clearHistory.Click += delegate {
                 if (MessageBox.Show(this, "清空所有历史记录？已恢复的当前记录也会清除。", "账号验证管家",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                try { history.Clear(); if (selectedHistory != Guid.Empty) InvalidateSavedResult(); RefreshHistory(); SetStatus("历史记录已清空", false); }
+                try { history.Clear(); if (selectedRecord != null) InvalidateSavedResult(); RefreshHistory(); SetStatus("历史记录已清空", false); }
                 catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法清空历史记录，请检查文件是否可写。", true); }
             };
             layout.Controls.Add(clearHistory, 0, 4); card.Controls.Add(layout); return card;
@@ -502,6 +500,7 @@ namespace AccountSplit2FA
 
         private void RefreshHistory()
         {
+            displayedHistory = history.Entries;
             historyList.SuspendLayout();
             while (historyList.Controls.Count > 0) { Control old = historyList.Controls[0]; historyList.Controls.RemoveAt(0); old.Dispose(); }
             historyCount.Text = history.Entries.Count + " / 10 条 · 点击记录恢复";
@@ -534,7 +533,7 @@ namespace AccountSplit2FA
         {
             bool named = entry.Name.Length > 0;
             Card card = new Card { Height = named ? 158 : 136, Padding = new Padding(6), Margin = new Padding(0, 0, 0, 8), Radius = 9,
-                BorderColor = entry.Id == selectedHistory ? Color.FromArgb(139, 168, 250) : Theme.Line };
+                BorderColor = selectedRecord != null && entry.Id == selectedRecord.Id ? Color.FromArgb(139, 168, 250) : Theme.Line };
             card.Tag = entry.Id;
             TableLayoutPanel content = Table(1, named ? 5 : 4); content.Dock = DockStyle.Fill;
             content.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
@@ -625,17 +624,28 @@ namespace AccountSplit2FA
         {
             if (expiryButton != null) expiryButton.Text = "保存期限：" + (newRetention == null ? "永久" : newRetention.Label);
         }
-        private bool EnsureCurrentRecord()
+        private void SynchronizeSelectedRecord(HistoryEntry current)
         {
-            if (data == null || selectedHistory == Guid.Empty) return true;
-            try {
-                if (history.Find(selectedHistory) != null) return true;
-                InvalidateSavedResult(); return false;
-            } catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("无法确认历史状态，请重试。", true); return false; }
+            if (current == null) { InvalidateSavedResult(); return; }
+            if (selectedRecord.HasSameCredentials(current) && selectedRecord.UsesUri == current.UsesUri &&
+                selectedRecord.Automatic == current.Automatic && selectedRecord.FirstSeparator == current.FirstSeparator &&
+                selectedRecord.LastSeparator == current.LastSeparator) selectedRecord = current;
+            else DisplayEntry(current);
+        }
+        private bool HistoryRowsChanged(IList<HistoryEntry> entries)
+        {
+            if (displayedHistory.Count != entries.Count) return true;
+            for (int i = 0; i < entries.Count; i++) {
+                HistoryEntry shown = displayedHistory[i], current = entries[i];
+                if (shown.Id != current.Id || shown.Name != current.Name || shown.Pinned != current.Pinned ||
+                    shown.ExpiresAtUtc != current.ExpiresAtUtc || shown.RecognizedAtUtc != current.RecognizedAtUtc ||
+                    !shown.HasSameCredentials(current)) return true;
+            }
+            return false;
         }
         private void InvalidateSavedResult()
         {
-            selectedHistory = Guid.Empty; ResetResult(); input.Clear();
+            ResetResult(); input.Clear();
             foreach (Form dialog in OwnedForms) if (dialog is OtpReplaceDialog) dialog.Close();
             SetStatus("当前记录已到期或被删除，内容已清除。", true);
         }
@@ -646,14 +656,16 @@ namespace AccountSplit2FA
             nextHistoryRefresh = DateTime.UtcNow.AddSeconds(1);
             try {
                 history.Load();
-                bool selectedExists = false; foreach (HistoryEntry e in history.Entries) if (e.Id == selectedHistory) selectedExists = true;
-                if (selectedHistory != Guid.Empty && data != null && !selectedExists) InvalidateSavedResult();
-                string stamp = "";
-                foreach (HistoryEntry e in history.Entries) stamp += e.Id + ":" + e.Name + ":" + e.ExpiresAtUtc + ":" + e.Pinned + ":" + e.RecognizedAtUtc.Ticks + ":" + e.Counter + ";";
-                if (force || stamp != historyStamp) { historyStamp = stamp; RefreshHistory(); }
+                IList<HistoryEntry> entries = history.Entries;
+                if (selectedRecord != null) {
+                    HistoryEntry selected = null;
+                    foreach (HistoryEntry entry in entries) if (entry.Id == selectedRecord.Id) { selected = entry; break; }
+                    SynchronizeSelectedRecord(selected);
+                }
+                if (force || HistoryRowsChanged(entries)) RefreshHistory();
             } catch (Exception error) {
                 if (!HistoryFailure(error)) throw;
-                foreach (HistoryEntry e in history.Entries) if (e.Id == selectedHistory && e.IsExpired(DateTime.UtcNow)) { InvalidateSavedResult(); break; }
+                if (selectedRecord != null && selectedRecord.IsExpired(DateTime.UtcNow)) InvalidateSavedResult();
                 SetStatus("历史清理失败，原文件已保留。", true);
             }
         }
@@ -688,7 +700,8 @@ namespace AccountSplit2FA
         private void PromptReplaceOtp()
         {
             try {
-                HistoryEntry entry = history.Find(selectedHistory);
+                if (selectedRecord == null) return;
+                HistoryEntry entry = history.Find(selectedRecord.Id);
                 if (entry == null) { SetStatus("请先识别或打开一条已保存的历史记录。", true); return; }
                 using (OtpReplaceDialog dialog = new OtpReplaceDialog(entry, delegate(string text) {
                     HistoryEntry updated = history.ReplaceOtp(entry, text); RestoreHistory(updated);
@@ -719,34 +732,30 @@ namespace AccountSplit2FA
             catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("历史读取失败，原文件已保留。", true); return; }
             if (entry == null) { SynchronizeHistory(true); SetStatus("记录已到期或被移除。", true); return; }
             if (historyExpanded) SetHistoryPage(false);
+            DisplayEntry(entry); RefreshHistory();
+            SetStatus("已恢复历史记录，可复制账号、密码和当前验证码。", false);
+        }
+        private void DisplayEntry(HistoryEntry entry)
+        {
             ResetResult(); SetSeparatorMode(entry.Automatic);
             if (!entry.Automatic) manualSeparator.Text = entry.FirstSeparator;
             input.Text = entry.OriginalText(); placeholder.Visible = false;
-            data = entry.Open(); selectedHistory = entry.Id; ShowResult(); RefreshHistory();
+            data = entry.Open(); selectedRecord = entry; ShowResult();
             nextCode.Enabled = data.OtpKind == OtpKind.Hotp && data.Counter < UInt64.MaxValue;
-            SetStatus("已恢复历史记录，可复制账号、密码和当前验证码。", false);
         }
 
         internal static bool HistoryFailure(Exception error)
         {
-            return error is IOException || error is UnauthorizedAccessException || error is CryptographicException ||
+            return error is InvalidDataException || error is IOException || error is UnauthorizedAccessException || error is CryptographicException ||
                 error is FormatException || error is System.Security.SecurityException;
         }
 
         private void AdvanceHotp()
         {
-            if (data == null || data.OtpKind != OtpKind.Hotp) return;
-            try { HistoryEntry entry = history.AdvanceCounter(selectedHistory, data.Counter); RestoreHistory(entry); SetStatus("HOTP 计数器已加一并保存，复制不会再次递增。", false); }
-            catch (InvalidOperationException error) { SetStatus(error.Message, true); }
+            if (selectedRecord == null || selectedRecord.OtpKind != OtpKind.Hotp) return;
+            try { HistoryEntry entry = history.AdvanceCounter(selectedRecord); RestoreHistory(entry); SetStatus("HOTP 计数器已加一并保存，复制不会再次递增。", false); }
+            catch (InvalidOperationException error) { SynchronizeHistory(true); SetStatus(error.Message, true); }
             catch (Exception error) { if (!HistoryFailure(error)) throw; SetStatus("计数器保存失败，当前验证码未改变。", true); }
-        }
-
-        private void RefreshHotp()
-        {
-            if (data == null || data.OtpKind != OtpKind.Hotp || selectedHistory == Guid.Empty) return;
-            HistoryEntry current = history.Find(selectedHistory);
-            if (current == null) throw new InvalidOperationException("历史记录已移除，请重新识别当前 URI。");
-            if (current.Counter != data.Counter) RestoreHistory(current);
         }
 
         private void CopyHistory(Guid id, int kind, string caption, ActionButton button)
@@ -756,7 +765,7 @@ namespace AccountSplit2FA
                 if (current == null) throw new InvalidOperationException("历史记录已更新，请重新展开历史面板。");
                 string value = kind == 0 ? current.Account : kind == 1 ? current.Password :
                     kind == 2 ? current.CurrentCode(Totp.UnixNow()) : current.CopyGroup(Totp.UnixNow());
-                Clipboard.SetText(value, TextDataFormat.UnicodeText); button.ShowCopied(); SetStatus("历史" + caption + "已复制", false);
+                writeClipboard(value); button.ShowCopied(); SetStatus("历史" + caption + "已复制", false);
             }
             catch (ExternalException) { SetStatus("剪贴板暂时不可用，请重试。", true); }
             catch (InvalidOperationException error) { SetStatus(error.Message, true); }

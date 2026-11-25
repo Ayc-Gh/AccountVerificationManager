@@ -106,10 +106,25 @@ namespace AccountSplit2FA
         public string ToUri()
         {
             string label = (Issuer.Length > 0 ? Issuer + ":" : "") + Account;
-            return "otpauth://" + (OtpKind == OtpKind.Hotp ? "hotp/" : "totp/") + Uri.EscapeDataString(label) +
-                "?secret=" + Uri.EscapeDataString(Secret) + (Issuer.Length > 0 ? "&issuer=" + Uri.EscapeDataString(Issuer) : "") +
+            return "otpauth://" + (OtpKind == OtpKind.Hotp ? "hotp/" : "totp/") + EscapeComponent(label) +
+                "?secret=" + EscapeComponent(Secret) + (Issuer.Length > 0 ? "&issuer=" + EscapeComponent(Issuer) : "") +
                 "&algorithm=" + Algorithm + "&digits=" + Digits.ToString(CultureInfo.InvariantCulture) +
                 (OtpKind == OtpKind.Hotp ? "&counter=" + Counter.ToString(CultureInfo.InvariantCulture) : "&period=" + Period.ToString(CultureInfo.InvariantCulture));
+        }
+
+        private static string EscapeComponent(string value)
+        {
+            // .NET Framework limits a single EscapeDataString call. Each part must contain whole code points.
+            const int chunkSize = 4096;
+            if (value.Length <= chunkSize) return Uri.EscapeDataString(value);
+            StringBuilder escaped = new StringBuilder(value.Length);
+            for (int start = 0; start < value.Length; ) {
+                int end = Math.Min(start + chunkSize, value.Length);
+                if (end < value.Length && Char.IsSurrogatePair(value, end - 1)) end--;
+                escaped.Append(Uri.EscapeDataString(value.Substring(start, end - start)));
+                start = end;
+            }
+            return escaped.ToString();
         }
 
         public string CopyText(long unixSeconds, bool includeSecret)
@@ -169,17 +184,25 @@ namespace AccountSplit2FA
         {
             text = Clean(text);
             Uri uri;
-            if (text.IndexOfAny(new char[] { '\r', '\n' }) >= 0 || !Uri.TryCreate(text, UriKind.Absolute, out uri) ||
-                !uri.Scheme.Equals("otpauth", StringComparison.OrdinalIgnoreCase) || text.IndexOf("otpauth://", StringComparison.OrdinalIgnoreCase) != 0 ||
-                uri.UserInfo.Length != 0 || uri.Port != -1 || uri.Fragment.Length != 0)
+            if (!Uri.TryCreate(text, UriKind.Absolute, out uri))
                 throw new FormatException("Authenticator URI 格式无效，请粘贴完整的 otpauth:// 链接。");
-            string type = uri.Host.ToLowerInvariant();
+            return ParseUriComponents(text);
+        }
+
+        // Callers bound the complete field at the input boundary (paste text or UTF-8 AVMX field).
+        internal static AccountData ParseUriComponents(string text)
+        {
+            const string prefix = "otpauth://";
+            if (!text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || text.IndexOfAny(new char[] { '\r', '\n', '#' }) >= 0)
+                throw new FormatException("Authenticator URI 格式无效，请粘贴完整的 otpauth:// 链接。");
+            int end = text.IndexOfAny(new char[] { '/', '?' }, prefix.Length);
+            if (end < 0) end = text.Length;
+            string type = text.Substring(prefix.Length, end - prefix.Length).ToLowerInvariant();
             if (type != "totp" && type != "hotp") throw new FormatException("Authenticator URI 类型仅支持 totp 或 hotp。");
             // Decode the original components once; malformed percent escapes must not be silently repaired by Uri.
             int queryIndex = text.IndexOf('?');
-            int pathIndex = text.IndexOf('/', "otpauth://".Length);
-            string rawLabel = pathIndex < 0 || (queryIndex >= 0 && pathIndex > queryIndex) ? "" :
-                text.Substring(pathIndex + 1, (queryIndex < 0 ? text.Length : queryIndex) - pathIndex - 1);
+            string rawLabel = end == text.Length || text[end] == '?' ? "" :
+                text.Substring(end + 1, (queryIndex < 0 ? text.Length : queryIndex) - end - 1);
             string label = Decode(rawLabel, false), issuerFromLabel = "", account = label.Trim();
             int colon = label.IndexOf(':');
             if (colon >= 0) { issuerFromLabel = label.Substring(0, colon).Trim(); account = label.Substring(colon + 1).Trim(); }

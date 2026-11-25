@@ -1,8 +1,10 @@
 # 账号验证管家 Android
 
-账号验证管家的 Android 原生应用。当前正式版本为 **1.10.0**，新增 OpenAI / Claude 官方网页授权、历史账号自动填充以及 CPA / sub2api JSON 导出。Android 真实网页登录与目标服务导入未验收；Windows OpenAI 真实登录与双格式保存已通过。Claude 按用户要求停止真实账号核验。同时保留“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
+账号验证管家的 Android 原生应用。当前正式版本为 **1.10.1**，支持 OpenAI / Claude 官方网页授权、历史账号自动填充以及 CPA / sub2api JSON 导出。Android 真实网页登录与目标服务导入未验收；Windows OpenAI 真实登录与双格式保存已通过。Claude 按用户要求停止真实账号核验。同时保留“数字 + 分 / 时 / 天 / 周 / 月”保存期限、历史置顶/删除及多选密码加密导入导出。首次保存时开始计时，1 月按 30 天计算。原有功能提供历史记录命名、二维码拍照/上传与智能识别：账号记录、纯 2FA 密钥、Authenticator URI。Android 工程位于仓库的 `android/` 目录，可独立构建。
 
-[Android v1.10.0 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.10.0/AccountVerificationManager-android-v1.10.0.apk) · [Windows v1.10.0](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.10.0/AccountVerificationManager-v1.10.0-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
+[Android v1.10.1 APK](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/android-v1.10.1/AccountVerificationManager-android-v1.10.1.apk) · [Windows v1.10.1](https://github.com/Ayc-Gh/AccountVerificationManager/releases/download/v1.10.1/AccountVerificationManager-v1.10.1-win-portable.zip) · [统一项目接手说明](../docs/项目接手.md)
+
+**Android 旧版用户请先备份。** 1.10.1 启用新的发布签名。请先在旧版的历史管理中选中所有需保留的记录，导出加密 `.avmx` 文件，确认文件保存在卸载后仍可访问的位置，并记住备份密码。再卸载旧版、安装 1.10.1 并导入历史。 详见 [迁移说明](../docs/v1.10.1发布说明.md)。
 
 支持 Android 8.0 及以上，解析与验证码离线运行、登录按需联网；自动填充需 Android 9.0+。二维码解码使用内置 ZXing，拍照文件使用 AndroidX FileProvider。界面支持系统深色模式。
 
@@ -18,7 +20,7 @@
 
 点击“拍照识别二维码”调用系统相机，确认照片后识别；点击“上传二维码图片”从系统文件选择器选择图片。图像在本机解码，支持纯密钥与标准 TOTP URI，保留算法、位数和周期。同图多个有效二维码可选择一条。取消不会改动当前结果，失败会使旧复制按钮失效。已恢复防截图、录屏及最近任务预览保护，复制内容使用敏感标记隐藏系统预览。
 
-两端正式版本统一为 1.10.0；Android versionCode 为 11000，保留原签名。1.9.x 的期限管理与加密备份已包含，详情见 [历史管理与加密导入导出](../docs/v1.9.0历史管理与加密导入导出.md)。
+两端正式版本统一为 1.10.1，Android versionCode 为 11001。1.9.x 的期限管理与加密备份已包含，详情见 [历史管理与加密导入导出](../docs/v1.9.0历史管理与加密导入导出.md)。
 
 ## 历史命名
 
@@ -61,7 +63,11 @@ Windows PowerShell 7、JDK 21、Android SDK platform 37 和 build-tools 37.0.0�
 .\build.ps1 -Offline
 ```
 
-脚本首次生成专用签名 `signing/release.jks` 和本地密码文件，以后始终复用；应单独备份整个 signing 目录以便升级。不要将签名文件提交或公开分享。源码压缩包排除此目录。输出文件名按版本号生成，当前发布构建为 `release/账号验证管家-v1.10.0.apk`，同时执行单元测试、发布版 lint 和 APK 签名验证。
+构建可覆盖升级的正式版前，请从私有备份恢复 `android/signing/release.jks` 和 `release.properties`。正式构建会核对密钥别名对应的证书，导出到 `release/` 前还会验证生成的 APK 签名。校验依据是 1.10.1 起使用的发布证书 SHA-256，见[签名更换记录](../docs/v1.10.1发布说明.md)。签名材料应单独备份，源码包排除了整个签名目录。脚本同时执行单元测试和发布版 lint，输出文件按版本号命名，例如 `release/账号验证管家-v1.10.1.apk`。
+
+仅开发或测试时，可在配置好 JDK、SDK 后从 `android/` 运行 `.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug`，使用独立 QA 包和调试签名。
+
+维护发布流程时可运行 `.\test-release-signing.ps1`。该检查在临时目录验证缺失、错误及匹配证书的情形，并检查正式产物的复制时机。依赖已缓存时可加 `-Offline`。
 
 ## 真实设备测试
 
@@ -73,7 +79,16 @@ adb shell am force-stop cn.local.accountmanager.qa
 adb shell am instrument -w cn.local.accountmanager.qa.test/cn.local.accountmanager.AcceptanceInstrumentation
 ```
 
-测试目标包为 `cn.local.accountmanager.qa`，与正式包 `cn.local.accountmanager` 的数据完全分开。设备测试只使用虚构数据，并在成功后清除测试历史；当前版本禁止截图和录屏，验收不取消这些保护。`build.ps1 -DeviceTests` 会附加生成两个测试 APK，设备执行仍使用上述 adb 命令。单元测试报告在 `app/build/reports/tests/testDebugUnitTest`；功能对应关系见 [迁移分析](docs/项目理解与功能对应.md)。
+测试目标包为 `cn.local.accountmanager.qa`，与正式包 `cn.local.accountmanager` 的数据完全分开。上述 instrumentation 使用虚构数据，在成功后清除 QA 历史。设备验收保留应用的截图和录屏保护。`build.ps1 -DeviceTests` 会附加生成两个测试 APK，设备执行仍使用上述 adb 命令。单元测试报告在 `app/build/reports/tests/testDebugUnitTest`；功能对应关系见 [迁移分析](docs/项目理解与功能对应.md)。
+
+文件选址和进程回收的专项回归由电脑端驱动。先启动带系统文件选择器和浏览器的 QA 模拟器，在该模拟器安装本次 debug APK，然后从 `android/` 用 PowerShell 7 运行以下两项。将参数替换为实际模拟器的序列号和 AVD 名称；若 adb 未加入 PATH，可另传 `-AdbPath`。
+
+```powershell
+pwsh -File ./test-json-picker.ps1 -Serial emulator-5554 -AvdName My_QA_AVD
+pwsh -File ./test-json-process-recovery.ps1 -Serial emulator-5554 -AvdName My_QA_AVD
+```
+
+第一项在系统选择器等待选址时旋转，并从 Downloads 读回 CPA 和 sub2api 文件。第二项在选择器前台时终止后台 QA 进程，再从选择器返回并发起一次新的手动登录。两项均使用虚构账号和独立文件名，可以在离线模拟器上运行。
 
 1.10.0 发布产物及验收范围见 [登录与文件生成](../docs/v1.10.0登录与文件生成.md)；[早期验证报告](docs/验证报告.md) 保留历史验收范围。[纯密钥](docs/preview-secret.png)、[Authenticator URI](docs/preview-uri.png)、[URI 识别结果](docs/preview-uri-details.png)、[三种类型历史](docs/preview-smart-history.png) 均为虚构数据的真机窗口截图。
 

@@ -51,8 +51,8 @@ namespace AccountSplit2FA
         private static byte[] Part(byte[] bytes, int offset, int count) { byte[] part = new byte[count]; Buffer.BlockCopy(bytes, offset, part, 0, count); return part; }
         private static void Long(BinaryWriter writer, long value) { for (int i = 7; i >= 0; i--) writer.Write((byte)(value >> (i * 8))); }
         private static long Long(BinaryReader reader) { ulong value = 0; for (int i = 0; i < 8; i++) value = (value << 8) | reader.ReadByte(); return unchecked((long)value); }
-        private static void Text(BinaryWriter writer, string value) { byte[] bytes = Encoding.UTF8.GetBytes(value); if (bytes.Length > 131072) throw new FormatException("字段过长。"); Long(writer, bytes.Length); writer.Write(bytes); }
-        private static string Text(BinaryReader reader) { long n = Long(reader); if (n < 0 || n > 131072 || n > reader.BaseStream.Length - reader.BaseStream.Position) throw new FormatException("文件字段无效。"); return new UTF8Encoding(false, true).GetString(reader.ReadBytes((int)n)); }
+        private static void Text(BinaryWriter writer, string value) { byte[] bytes = Encoding.UTF8.GetBytes(value); if (bytes.Length > HistoryStore.MaxFieldBytes) throw new FormatException("字段过长。"); Long(writer, bytes.Length); writer.Write(bytes); }
+        private static string Text(BinaryReader reader) { long n = Long(reader); if (n < 0 || n > HistoryStore.MaxFieldBytes || n > reader.BaseStream.Length - reader.BaseStream.Position) throw new FormatException("文件字段无效。"); return new UTF8Encoding(false, true).GetString(reader.ReadBytes((int)n)); }
         private static byte[] Encode(IList<HistoryEntry> entries)
         {
             if (entries.Count < 1 || entries.Count > HistoryStore.Limit) throw new FormatException("请选择 1 至 10 条记录。");
@@ -82,7 +82,7 @@ namespace AccountSplit2FA
                         long recognized = Long(reader), expires = Long(reader); bool automatic = reader.ReadBoolean(), pinned = reader.ReadBoolean();
                         if (recognized < 0 || expires < 0 || (kind != "RECORD" && kind != "SECRET" && kind != "URI")) throw new FormatException("文件记录字段无效。");
                         if (kind == "RECORD" && (account.Length == 0 || password.Length == 0 || first.Length == 0 || last.Length == 0)) throw new FormatException("账号记录字段不完整。");
-                        using (AccountData otp = SmartParser.ParseUri(uri)) {
+                        using (AccountData otp = SmartParser.ParseUriComponents(uri)) {
                             InputKind type = kind == "RECORD" ? InputKind.Record : kind == "SECRET" ? InputKind.Secret : InputKind.AuthenticatorUri;
                             if (type != InputKind.Record && (password.Length > 0 || first.Length > 0 || last.Length > 0)) throw new FormatException("文件字段不一致。");
                             if (type == InputKind.Secret && (account.Length > 0 || otp.Issuer.Length > 0 || otp.OtpKind != OtpKind.Totp || otp.Algorithm != "SHA1" || otp.Digits != 6 || otp.Period != 30)) throw new FormatException("独立密钥参数无效。");

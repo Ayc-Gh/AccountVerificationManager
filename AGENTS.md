@@ -2,6 +2,8 @@
 
 这是 Windows 与 Android 的统一维护仓库。先读 `docs/项目接手.md`，再按任务检查实际代码与 Git 状态。Windows 在根目录，Android 在 `android/`。两端使用独立原生实现，不能假定已有功能完全相同。
 
+当前 Windows 和 Android 版本为 1.10.1。1.10.0 及以前 Android 发布密钥已丢失，1.10.1 启用新证书，迁移步骤与新旧指纹见 [1.10.1 发布说明](docs/v1.10.1发布说明.md)。后续版本请沿用 1.10.1 发布证书。
+
 2026-11-17 两端正式发布 1.10.0，发行标签为 `v1.10.0` / `android-v1.10.0`。加入登录与 CPA / sub2api，详见 `docs/v1.10.0登录与文件生成.md`。Windows OpenAI 真实登录与双格式保存通过；Claude 按用户要求停止真实账号核验，实际服务端导入尚未验收。保存期限改为数字 + 分/时/天/周/月，详见 `docs/v1.9.2保存期限与发布验证.md`。1.9.1 修复 Windows 管理与多二维码菜单提前释放异常，详见 `docs/v1.9.1管理菜单修复.md`。到期清理、历史删除/置顶及多选密码加密导入导出已实现，详见 `docs/v1.9.0历史管理与加密导入导出.md`。用户不要求旧数据兼容，现有 v1/v2/v3 读取逻辑仍保留；当前写入 v4。
 
 - 登录是按需联网的独立功能，保留离线解析。OAuth PKCE/state 只接受本次 localhost 完整回调，校验所选历史邮箱与官方返回身份；一次性授权码禁止重放，令牌交换禁止重定向，不记录授权码、密码、密钥或令牌。
@@ -18,7 +20,7 @@
 - Android 1.8.0 起支持账号记录末项 URI，以保留更换后的算法、位数、周期；仍不支持 HOTP，Windows HOTP 更换要求含 counter 的完整 URI。不要顺带改变其他解析语义。
 - Windows 历史使用当前用户 DPAPI，Android 使用 Keystore/AES-GCM；禁止将正式历史、真实凭据或签名密码写入测试、文档、日志或提交。
 - Windows 下拉菜单不能在 Closed 或点击回调里立即 Dispose；复用随窗口释放的 DeferredContextMenu，并排队执行会打开弹窗或重建历史控件的动作。回归需实际触发 ToolStripItem.PerformClick，包含取消、重复打开与窗口关闭。
-- Android 正式包名保持 `cn.local.accountmanager`，测试包保持 `cn.local.accountmanager.qa`。保留原 `android/signing/`，已发布应用不能换签名覆盖升级。
+- Android 正式包名保持 `cn.local.accountmanager`，测试包保持 `cn.local.accountmanager.qa`。保留当前 `android/signing/`，覆盖升级要求证书与已安装版本一致。
 - `local-build.psd1`、`.local/`、`releases/`、Android 本机配置和签名目录必须保持 Git 忽略；任何打包或提交前检查排除情况。
 - `verify.ps1 -Platform Windows` 运行 Windows 构建、核心/智能解析/二维码/历史/OAuth/UI 检查；若安装 Node，再运行浏览器填充脚本检查；`verify.ps1 -Platform Android -Offline` 运行 Android 单元测试、发布 Lint、签名构建与 APK 验证。默认不安装或操作正式手机应用。
 - Android 真机验收使用独立 QA 包和虚构数据；旧报告的 60 项真机检查不能表述为本次重新执行。

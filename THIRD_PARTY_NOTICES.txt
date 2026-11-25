@@ -12,7 +12,7 @@ Android QR 解码：com.google.zxing:core:3.5.4。
 项目：https://github.com/zxing/zxing
 版权所有：ZXing authors；Apache License 2.0。
 
-Android 照片文件 URI：androidx.core:core:1.17.0 及其传递依赖。
+Android 照片文件 URI：androidx.core:core:1.19.1 及其传递依赖。
 项目：https://developer.android.com/jetpack/androidx/releases/core
 版权所有：The Android Open Source Project；Apache License 2.0。
 Android APK 的 assets/Apache-2.0.txt 提供完整 Apache License 2.0 文本，assets/THIRD_PARTY_NOTICES.txt 提供组件说明；相关文本也随源码及 Windows 便携包提供。

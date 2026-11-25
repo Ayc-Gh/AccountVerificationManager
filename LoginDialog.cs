@@ -24,7 +24,7 @@ namespace AccountSplit2FA
         private bool exchanging;
         private int generation;
         public LoginDialog(Func<HistoryEntry> current) {
-            this.current = delegate { try { return current(); } catch (Exception e) { if (!(e is IOException || e is UnauthorizedAccessException || e is System.Security.Cryptography.CryptographicException || e is FormatException || e is InvalidOperationException)) throw; return null; } };
+            this.current = delegate { try { return current(); } catch (Exception e) { if (!MainForm.HistoryFailure(e) && !(e is InvalidOperationException)) throw; return null; } };
             Text = "登录并生成 CPA / sub2api"; ClientSize = new Size(590, 480); Font = Theme.Font(10, FontStyle.Regular); BackColor = Theme.Background;
             StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog; MinimizeBox = MaximizeBox = false;
             Controls.Add(new Label { Text = "选择服务与登录方式", Bounds = new Rectangle(22, 20, 546, 26), ForeColor = Theme.Ink });

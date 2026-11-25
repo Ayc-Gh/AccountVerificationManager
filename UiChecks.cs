@@ -49,7 +49,8 @@ internal static class UiChecks
             Check(Field<ComboBox>(dialog, "provider").Enabled && Field<ComboBox>(dialog, "mode").Enabled, "invalidated login can restart or change mode");
             dialog.Close();
         }
-        using (LoginDialog dialog = new LoginDialog(delegate { throw new IOException("synthetic history read failure"); })) {
+        foreach (Exception failure in new Exception[] { new IOException("synthetic read failure"), new InvalidDataException("synthetic invalid history") })
+        using (LoginDialog dialog = new LoginDialog(delegate { throw failure; })) {
             ShowOffscreen(dialog);
             typeof(LoginDialog).GetField("login", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(dialog, new OAuthLogin(LoginProvider.OpenAI, entry.Account));
             typeof(Timer).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Field<Timer>(dialog, "expiry"), new object[] {EventArgs.Empty});
@@ -147,7 +148,7 @@ internal static class UiChecks
             TextBox input = Field<TextBox>(form, "input"); input.Text = "new@example.com----Demo----" + Secret;
             typeof(MainForm).GetField("newRetention", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, RetentionPeriod.Parse("1", 1));
             Call(form, "ParseInput"); store.Load();
-            Guid selected = Field<Guid>(form, "selectedHistory");
+            Guid selected = Field<HistoryEntry>(form, "selectedRecord").Id;
             Check(store.Entries[0].Account == "pinned@example.com" && store.Find(selected).Account == "new@example.com", "parsing selects saved ID instead of pinned first entry");
             Check(store.Find(selected).ExpiresAtUtc == store.Find(selected).RecognizedAtUtc.AddHours(1) && Field<RetentionPeriod>(form, "newRetention") == null, "first parse starts duration at save time and resets input default");
             for (int width = 780; width <= 876; width += 96) {
@@ -284,6 +285,99 @@ internal static class UiChecks
         }
         Check(!ran && menu.IsDisposed, "closing owner discards pending action and disposes its menu");
     }
+    private static void Click(Form form, string button)
+    {
+        Control control = Field<Control>(form, button);
+        Check(control.Enabled, button + " available before click");
+        typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(control, new object[] { EventArgs.Empty });
+    }
+    private static void PollHistory(MainForm form)
+    {
+        typeof(MainForm).GetField("nextHistoryRefresh", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, DateTime.MinValue);
+        typeof(Timer).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Field<Timer>(form, "timer"), new object[] { EventArgs.Empty });
+    }
+    private static void CheckSharedHistory(string folder)
+    {
+        string path = Path.Combine(folder, "shared-history.bin"), copied = null;
+        const string secondKey = "JBSWY3DPEHPK3PXP";
+        using (MainForm writer = new MainForm(path))
+        using (MainForm reader = new MainForm(path, value => copied = value)) {
+            ShowOffscreen(writer); ShowOffscreen(reader);
+            // Advance the reader's real timer handler explicitly, so copies can also be checked before a tick.
+            Field<Timer>(reader, "timer").Stop();
+            Field<TextBox>(writer, "input").Text = "shared@example.com------SyntheticPassword------" + Secret;
+            Call(writer, "ParseInput");
+            HistoryStore store = Field<HistoryStore>(writer, "history");
+            HistoryEntry original = Field<HistoryEntry>(writer, "selectedRecord");
+            Call(reader, "RestoreHistory", original);
+            writer.BeginInvoke((MethodInvoker)delegate {
+                OtpReplaceDialog dialog = (OtpReplaceDialog)writer.OwnedForms[0];
+                try {
+                    Field<TextBox>(dialog, "replacementInput").Text = secondKey;
+                    Click(dialog, "save");
+                } finally { if (dialog.Visible) dialog.Close(); }
+            });
+            Click(writer, "replaceOtp");
+            Check(store.Find(original.Id).Secret == secondKey && Field<TextBox>(reader, "secret").Text == Secret, "other window still shows previous TOTP before first tick");
+            Click(reader, "secretCopy");
+            Check(copied == secondKey && Field<TextBox>(reader, "input").Text.Contains(secondKey), "immediate copy reloads the selected TOTP and its original input");
+
+            store.Rename(original.Id, "并发名称"); store.SetPinned(original.Id, true);
+            HistoryEntry other;
+            using (AccountData item = SmartParser.Parse("other@example.com------AnotherPassword------" + Secret)) other = store.Record(item, true);
+            store.SetPinned(other.Id, true);
+            using (AccountData item = other.Open()) store.Record(item, true);
+            Call(reader, "ToggleHistory");
+            HistoryEntry updated = store.ReplaceOtp(store.Find(original.Id), "otpauth://totp/Work:demo?secret=" + secondKey + "&issuer=Work&algorithm=SHA256&digits=8&period=60");
+            PollHistory(reader);
+            AccountData current = Field<AccountData>(reader, "data");
+            long now = Totp.UnixNow();
+            string shown = Field<Label>(reader, "codeLabel").Text.Replace(" ", "");
+            Check(current.Algorithm == "SHA256" && current.Period == 60 && current.Digits == 8 &&
+                (shown == updated.CurrentCode(now) || shown == updated.CurrentCode(now - 1)), "timer updates parameters and displayed TOTP, even with the same secret");
+            Check(Field<bool>(reader, "historyExpanded") && Field<HistoryEntry>(reader, "selectedRecord").Id == original.Id &&
+                Field<HistoryEntry>(reader, "selectedRecord").Name == "并发名称" && store.Entries[0].Id == other.Id &&
+                store.Find(original.Id).Pinned, "refresh preserves history page, selected identity and concurrent metadata");
+            Call(reader, "ToggleHistory");
+
+            updated = store.ReplaceOtp(updated, "otpauth://hotp/demo?secret=" + secondKey + "&counter=0");
+            Click(reader, "codeCopy");
+            Check(copied == updated.CurrentCode(0) && Field<Control>(reader, "nextCode").Enabled, "copy detects TOTP changing to HOTP with the same counter");
+            updated = store.ReplaceOtp(updated, "otpauth://hotp/demo?secret=" + Secret + "&counter=0");
+            Click(reader, "nextCode");
+            Check(store.Find(original.Id).Counter == 0 && Field<TextBox>(reader, "secret").Text == Secret, "stale next action cannot advance a replacement HOTP at the same counter");
+            updated = store.AdvanceCounter(updated);
+            Click(reader, "allCopy");
+            using (AccountData expected = updated.Open()) Check(copied == expected.CopyText(0, true), "group copy includes the latest key and counter code without advancing");
+            Check(store.Find(original.Id).Counter == 1, "copying HOTP leaves persisted counter intact");
+            store.Delete(original.Id);
+            copied = null; Click(reader, "passwordCopy");
+            Check(copied == null && Field<AccountData>(reader, "data") == null && !Field<Control>(reader, "codeCopy").Enabled, "deletion between ticks prevents copying and clears the result");
+
+            Call(reader, "RestoreHistory", other);
+            HistoryStore earlierClock = new HistoryStore(path, () => DateTime.UtcNow.AddMinutes(-2));
+            earlierClock.SetExpiration(other.Id, DateTime.UtcNow.AddMinutes(-1));
+            Click(reader, "accountCopy");
+            Check(copied == null && Field<AccountData>(reader, "data") == null, "expiry before the next tick clears results without copying");
+
+            using (AccountData item = other.Open()) other = store.Record(item, true);
+            Call(reader, "RestoreHistory", other);
+            Field<TextBox>(reader, "input").Text = "unfinished draft";
+            store.Delete(other.Id); PollHistory(reader);
+            Check(Field<TextBox>(reader, "input").Text == "unfinished draft", "history polling preserves manually edited input");
+            writer.Close(); reader.Close();
+        }
+        string damaged = Path.Combine(folder, "damaged-history.bin");
+        using (FileStream file = File.Create(damaged)) file.SetLength(HistoryStore.MaxFileBytes + 1);
+        using (MainForm form = new MainForm(damaged, value => copied = value)) {
+            Check(Field<Label>(form, "status").Text.Contains("原文件已保留"), "oversized history reports a readable error while opening the window");
+            Field<TextBox>(form, "input").Text = Secret; Call(form, "ParseInput"); PollHistory(form);
+            copied = null; Click(form, "secretCopy");
+            Check(copied == Secret && Field<HistoryEntry>(form, "selectedRecord") == null &&
+                !Field<Control>(form, "replaceOtp").Enabled && new FileInfo(damaged).Length == HistoryStore.MaxFileBytes + 1,
+                "save failure preserves the isolated damaged file and allows copying the unpersisted parse");
+        }
+    }
     [STAThread]
     private static void Main()
     {
@@ -351,7 +445,7 @@ internal static class UiChecks
                 Call(form, "AdvanceHotp");
                 Check(Field<AccountData>(form, "data").Counter == 2 && Field<Label>(form, "codeLabel").Text == "359 152", "HOTP next action advances and restores correct result");
                 smart.Load(); HistoryEntry current = smart.Entries[0]; smart.AdvanceCounter(current.Id, 2);
-                Call(form, "RefreshHotp");
+                PollHistory(form);
                 Check(Field<AccountData>(form, "data").Counter == 3 && Field<Label>(form, "codeLabel").Text == "969 429", "copy preparation refreshes counter changed in another window");
                 Field<TextBox>(form, "input").Text = "otpauth://totp/demo?secret=" + Secret + "&digits=7"; Call(form, "ParseInput");
                 Check(!Field<Control>(form, "codeCopy").Enabled && Field<AccountData>(form, "data") == null, "invalid URI settings do not leave a stale usable code");
@@ -402,6 +496,7 @@ internal static class UiChecks
             CheckReplacementDialog(checks, store);
             CheckTransferDialogs(checks, store);
             CheckHistoryManagement(checks, path);
+            CheckSharedHistory(folder);
             CheckContextMenuLifetime(path);
             CheckLoginDialog(checks, store);
             Console.WriteLine("PASS: " + passed + " UI integration checks; compact layout, history navigation, naming, live OTP, QR import, minimum size and Escape behavior.");

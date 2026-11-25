@@ -1,15 +1,33 @@
 package cn.local.accountmanager;
 
+import android.content.ContentResolver;
+import android.net.Uri;
 import cn.local.accountmanager.core.*;
 import cn.local.accountmanager.storage.HistoryRepository;
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** A single bounded in-memory login, retained through Activity rotations. */
 final class LoginFlow implements AutoCloseable {
     interface Listener { void updated(); }
+    static final String EXPIRED_NOTICE = "历史记录失效或登录超时，请重新开始。";
+    // A rotating Activity can retain the outcome without retaining the record or OAuth credentials.
+    static final class EndNotice { volatile String text; }
+    final EndNotice endNotice = new EndNotice();
+    static final class ExportRequest {
+        private static final int FIRST_CODE = 0x4000;
+        private static final int CODE_MASK = 0x3fff;
+        private static final AtomicInteger sequence = new AtomicInteger();
+        final int code = FIRST_CODE + (sequence.getAndIncrement() & CODE_MASK);
+        final boolean sub2api;
+        private boolean writing;
+        ExportRequest(boolean sub2api){this.sub2api=sub2api;}
+        static boolean ownsCode(int code){return code>=FIRST_CODE && code<=FIRST_CODE+CODE_MASK;}
+    }
+    private volatile ExportRequest export;
     static volatile LoginFlow active;
     final OAuthLogin login;
     final String recordId, original;
@@ -22,10 +40,64 @@ final class LoginFlow implements AutoCloseable {
     final AtomicBoolean exchanging=new AtomicBoolean();
     private ServerSocket server;
     private final android.os.Handler expiry=new android.os.Handler(android.os.Looper.getMainLooper());
-    private final Runnable checkExpiry=new Runnable(){@Override public void run(){if(closed)return;if(current()==null||(credential!=null&&System.currentTimeMillis()>=credential.expires)){Listener previous=listener;close();if(previous!=null)previous.updated();}else expiry.postDelayed(this,1000);}};
+    private final Runnable checkExpiry=new Runnable(){@Override public void run(){
+        expireIfInvalid();
+        if (!closed) expiry.postDelayed(this,1000);
+    }};
     LoginFlow(HistoryRepository history,HistoryEntry entry,OAuthLogin.Provider provider,boolean autofill){this.history=history;recordId=entry.id;original=entry.originalText();login=new OAuthLogin(provider,entry.account);this.autofill=autofill;expiry.postDelayed(checkExpiry,1000);}
     HistoryEntry current(){HistoryEntry e=history.failed()?null:history.find(recordId);return !closed&&System.currentTimeMillis()<login.deadline&&e!=null&&e.originalText().equals(original)?e:null;}
+    synchronized void expireIfInvalid(){
+        if (!closed && (current()==null || (credential!=null && System.currentTimeMillis()>=credential.expires))) end(EXPIRED_NOTICE);
+    }
     void notifyChange(){Listener l=listener;if(l!=null)l.updated();}
+    boolean isExporting(){return export!=null;}
+    synchronized ExportRequest beginExport(boolean sub2api){
+        expireIfInvalid();
+        if(closed || credential==null || export!=null) return null;
+        export=new ExportRequest(sub2api);
+        return export;
+    }
+    synchronized void finishExport(ExportRequest request, String message){
+        if(export!=request) return;
+        export=null;
+        if(message!=null) notice=message;
+        notifyChange();
+    }
+    synchronized void acceptExportResult(int code, Uri destination, ContentResolver resolver){
+        ExportRequest request=export;
+        if(request==null || request.code!=code || request.writing) return;
+        if(destination==null){finishExport(request,null);return;}
+        expireIfInvalid();
+        if(closed) return;
+        request.writing=true;
+        new Thread(()->writeExport(request,destination,resolver),"login-export").start();
+    }
+    private synchronized boolean canWrite(ExportRequest request){
+        expireIfInvalid();
+        return export==request && credential!=null;
+    }
+    private void writeExport(ExportRequest request, Uri destination, ContentResolver resolver){
+        String message="文件写入失败或登录结果失效，请重试。";
+        byte[] bytes=null;
+        try{
+            if(!canWrite(request)) return;
+            // Opening or writing a provider document can block while the Activity is being recreated.
+            try(OutputStream output=resolver.openOutputStream(destination,"wt")){
+                if(output==null) throw new IOException();
+                synchronized(this){
+                    if(!canWrite(request)) return;
+                    bytes=credential.export(request.sub2api).getBytes(StandardCharsets.UTF_8);
+                }
+                output.write(bytes);
+            }
+            message=(request.sub2api?"sub2api":"CPA")+" 文件已生成，可继续生成另一种格式。";
+        }catch(Exception ignored){
+            // Provider messages can include private paths. Show the fixed write error.
+        }finally{
+            if(bytes!=null) java.util.Arrays.fill(bytes,(byte)0);
+            finishExport(request,message);
+        }
+    }
     void startServer()throws IOException {
         server=new ServerSocket();server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"),login.port()),4);server.setSoTimeout(1000);
         new Thread(()->{
@@ -43,17 +115,39 @@ final class LoginFlow implements AutoCloseable {
             stopServer();
         },"login-callback").start();
     }
-    void complete(String address){
+    synchronized void complete(String address){
         if(current()==null||credential!=null)return;
-        try{login.validateCallback(address);}catch(IllegalArgumentException e){notice=e.getMessage();if(login.isDenial(address)){Listener previous=listener;close();if(previous!=null)previous.updated();}else notifyChange();return;}
+        try{login.validateCallback(address);}catch(IllegalArgumentException e){
+            if(login.isDenial(address)) end(e.getMessage());
+            else { notice=e.getMessage(); notifyChange(); }
+            return;
+        }
         if(!exchanging.compareAndSet(false,true))return;notice="正在向官方授权服务交换凭据…";notifyChange();
         new Thread(()->{
-            try{OAuthLogin.Credential c=login.exchange(address);if(current()!=null){credential=c;notice="登录成功："+c.email+"。可分别生成 CPA 和 sub2api 文件。";}}
+            try{
+                OAuthLogin.Credential c=login.exchange(address);
+                synchronized(LoginFlow.this){
+                    if(current()!=null){credential=c;notice="登录成功："+c.email+"。可分别生成 CPA 和 sub2api 文件。";}
+                }
+            }
             catch(IllegalArgumentException e){notice=e.getMessage()+" 请重新开始登录。";}
             catch(Exception e){notice="授权交换失败，请检查网络后重新开始登录。";}
             finally{exchanging.set(false);stopServer();notifyChange();}
         },"login-exchange").start();
     }
     private void stopServer(){try{if(server!=null)server.close();}catch(IOException ignored){}}
-    @Override public void close(){closed=true;credential=null;listener=null;expiry.removeCallbacks(checkExpiry);stopServer();if(active==this)active=null;}
+    private synchronized void end(String reason){
+        if (closed) return;
+        endNotice.text=reason;
+        closed=true;
+        credential=null;
+        export=null;
+        Listener previous=listener;
+        listener=null;
+        expiry.removeCallbacks(checkExpiry);
+        stopServer();
+        if(active==this)active=null;
+        if(reason!=null && previous!=null)previous.updated();
+    }
+    @Override public void close(){end(null);}
 }

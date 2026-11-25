@@ -165,7 +165,7 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         detected = text("连续 3 个及以上符号，如 ---、===、|||", 11, muted, false); detected.setPadding(0, dp(8), 0, dp(2)); card.addView(detected);
         LinearLayout actions = horizontal();
         TextView paste = button("粘贴并解析", tint, accent, 14, this::pasteAndParse); paste.setId(R.id.paste);
-        expiryButton = button("保存期限：永久（仅首次保存）", tint, accent, 12, () -> ExpirationEditor.show(this, newRetention, 0, false, value -> { newRetention = value; refreshExpiryButton(); }));
+        expiryButton = button(expiryButtonText(), tint, accent, 12, () -> ExpirationEditor.show(this, newRetention, 0, false, value -> { newRetention = value; refreshExpiryButton(); }));
         expiryButton.setTag("new-expiration"); card.addView(expiryButton, spaced(8));
         TextView parse = button("识别并生成", accent, isDark() ? Color.parseColor("#102C26") : Color.WHITE, 14, this::parseInput); parse.setId(R.id.parse);
         LinearLayout.LayoutParams a = new LinearLayout.LayoutParams(0, dp(50), 1); a.setMarginEnd(dp(8)); actions.addView(paste, a);
@@ -357,8 +357,12 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
         }, "history-decrypt").start();
     }
 
+    private String expiryButtonText() {
+        String retention = newRetention == null ? getString(R.string.history_retention_permanent) : newRetention.label();
+        return getString(R.string.history_retention_first_save, retention);
+    }
     private void refreshExpiryButton() {
-        if (expiryButton != null) expiryButton.setText("保存期限：" + (newRetention == null ? "永久" : newRetention.label()) + "（仅首次保存）");
+        if (expiryButton != null) expiryButton.setText(expiryButtonText());
     }
     private boolean ensureCurrentRecord() {
         if (!selectedId.isEmpty() && history.loaded() && history.find(selectedId) == null) {
@@ -592,7 +596,11 @@ public final class MainActivity extends Activity implements HistoryRepository.Li
                 .setMessage("将删除本机保存的全部历史，并清除已恢复的当前记录。")
                 .setNegativeButton("取消", null).setPositiveButton("清空历史", (dialog, which) -> history.clear(success -> {
                     if (isDestroyed()) return;
-                    if (success) { selectedId = ""; changed(); setStatus("历史记录已清空", false); }
+                    if (success) {
+                        // onStop removes the history listener; reconcile the selected ID in this callback too.
+                        changed();
+                        setStatus("历史记录已清空", false);
+                    }
                     else setStatus("清空失败，请重试。", true);
                 })));
     }

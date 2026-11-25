@@ -65,6 +65,13 @@ namespace AccountSplit2FA
                 InputKind, OtpKind, Issuer, Algorithm, Digits, Period, Counter, UsesUri, Name, expires, pinned);
         }
 
+        internal bool HasSameCredentials(HistoryEntry other)
+        {
+            return other != null && Account == other.Account && Password == other.Password && Secret == other.Secret &&
+                InputKind == other.InputKind && OtpKind == other.OtpKind && Issuer == other.Issuer &&
+                Algorithm == other.Algorithm && Digits == other.Digits && Period == other.Period && Counter == other.Counter;
+        }
+
         public AccountData Open()
         {
             byte[] key = Base32.Decode(Secret);
@@ -108,6 +115,10 @@ namespace AccountSplit2FA
     public sealed class HistoryStore
     {
         public const int Limit = 10;
+        // AVMX and the Android history codec count UTF-8 bytes, independently of the paste limit.
+        internal const int MaxFieldBytes = 128 * 1024;
+        private const int MaxPlainBytes = 2 * 1024 * 1024;
+        internal const int MaxFileBytes = MaxPlainBytes + 1024 * 1024; // Allow for the DPAPI envelope.
         private const int Magic = 0x41564D48;
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("AccountVerificationManager.History.v1");
         private readonly string path, mutexName;
@@ -199,7 +210,7 @@ namespace AccountSplit2FA
                 List<HistoryEntry> next = ReadActive();
                 foreach (HistoryEntry e in imported) {
                     if (e.IsExpired(clock())) continue;
-                    bool duplicate = next.Exists(delegate(HistoryEntry x) { return x.Account == e.Account && x.Password == e.Password && x.Secret == e.Secret && x.InputKind == e.InputKind && x.OtpKind == e.OtpKind && x.Issuer == e.Issuer && x.Algorithm == e.Algorithm && x.Digits == e.Digits && x.Period == e.Period && x.Counter == e.Counter; });
+                    bool duplicate = next.Exists(e.HasSameCredentials);
                     if (duplicate) continue;
                     if (next.Count >= Limit) throw new InvalidOperationException("导入后超过 10 条，请减少选择或先删除历史；本次未导入任何记录。");
                     using (AccountData validated = e.Open()) { }
@@ -257,14 +268,25 @@ namespace AccountSplit2FA
 
         public HistoryEntry AdvanceCounter(Guid id, ulong expectedCounter)
         {
+            return AdvanceCounter(id, expectedCounter, null);
+        }
+
+        public HistoryEntry AdvanceCounter(HistoryEntry expected)
+        {
+            if (expected == null) throw new ArgumentNullException("expected");
+            return AdvanceCounter(expected.Id, expected.Counter, expected);
+        }
+
+        private HistoryEntry AdvanceCounter(Guid id, ulong expectedCounter, HistoryEntry expected)
+        {
             HistoryEntry advanced = null;
             Locked(delegate {
                 List<HistoryEntry> next = ReadActive();
                 int index = next.FindIndex(delegate(HistoryEntry candidate) { return candidate.Id == id; });
                 if (index < 0) throw new InvalidOperationException("记录已被清空或移出最近 10 条，请重新识别。");
                 HistoryEntry item = next[index];
-                if (item.OtpKind != OtpKind.Hotp || item.Counter != expectedCounter)
-                    throw new InvalidOperationException("计数器已在其他窗口更新，请重新打开历史记录。");
+                if (item.OtpKind != OtpKind.Hotp || item.Counter != expectedCounter || (expected != null && !item.HasSameCredentials(expected)))
+                    throw new InvalidOperationException("记录或计数器已在其他窗口更新，请重新打开历史记录。");
                 if (item.Counter == UInt64.MaxValue) throw new InvalidOperationException("HOTP 计数器已达上限。");
                 advanced = new HistoryEntry(item.Id, item.Account, item.Password, item.Secret, item.FirstSeparator, item.LastSeparator,
                     item.Automatic, item.RecognizedAtUtc, item.InputKind, item.OtpKind, item.Issuer, item.Algorithm, item.Digits, item.Period, item.Counter + 1, item.UsesUri, item.Name, item.ExpiresAtUtc, item.Pinned);
@@ -316,13 +338,13 @@ namespace AccountSplit2FA
         private List<HistoryEntry> Read()
         {
             if (!File.Exists(path)) return new List<HistoryEntry>();
-            if (new FileInfo(path).Length > 2 * 1024 * 1024) throw new InvalidDataException("历史记录文件大小异常。");
+            if (new FileInfo(path).Length > MaxFileBytes) throw new InvalidDataException("历史记录文件大小异常。");
             byte[] encrypted = File.ReadAllBytes(path);
             byte[] plain = null;
             try
             {
                 plain = ProtectedData.Unprotect(encrypted, Entropy, DataProtectionScope.CurrentUser);
-                if (plain.Length > 1024 * 1024) throw new InvalidDataException("历史记录内容过大。");
+                if (plain.Length > MaxPlainBytes) throw new InvalidDataException("历史记录内容过大。");
                 using (MemoryStream stream = new MemoryStream(plain, false))
                 using (BinaryReader reader = new BinaryReader(stream, Encoding.UTF8))
                 {
@@ -375,8 +397,14 @@ namespace AccountSplit2FA
         private static string ReadText(BinaryReader reader)
         {
             string value = reader.ReadString();
-            if (value.Length > 16384) throw new InvalidDataException("历史记录字段过长。");
+            if (Encoding.UTF8.GetByteCount(value) > MaxFieldBytes) throw new InvalidDataException("历史记录字段过长。");
             return value;
+        }
+
+        private static void WriteText(BinaryWriter writer, string value)
+        {
+            if (Encoding.UTF8.GetByteCount(value) > MaxFieldBytes) throw new FormatException("历史记录字段过长。");
+            writer.Write(value);
         }
 
         private void Write(List<HistoryEntry> next)
@@ -387,24 +415,28 @@ namespace AccountSplit2FA
             {
                 using (MemoryStream stream = new MemoryStream())
                 {
-                    using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, true))
+                    try
                     {
-                        writer.Write(Magic); writer.Write(4); writer.Write(next.Count);
-                        foreach (HistoryEntry item in next)
+                        using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, true))
                         {
-                            writer.Write(item.Id.ToString("N")); writer.Write(item.Account); writer.Write(item.Password); writer.Write(item.Secret);
-                            writer.Write(item.FirstSeparator); writer.Write(item.LastSeparator); writer.Write(item.Automatic); writer.Write(item.RecognizedAtUtc.Ticks);
-                            writer.Write((byte)item.InputKind); writer.Write(item.Issuer); writer.Write(item.Algorithm); writer.Write(item.Digits);
-                            writer.Write(item.Period); writer.Write((byte)item.OtpKind); writer.Write(item.Counter); writer.Write(item.UsesUri);
-                            writer.Write(item.Name);
-                            writer.Write(item.ExpiresAtUtc.HasValue ? item.ExpiresAtUtc.Value.Ticks : 0L); writer.Write(item.Pinned);
+                            writer.Write(Magic); writer.Write(4); writer.Write(next.Count);
+                            foreach (HistoryEntry item in next)
+                            {
+                                writer.Write(item.Id.ToString("N")); WriteText(writer, item.Account); WriteText(writer, item.Password); WriteText(writer, item.Secret);
+                                WriteText(writer, item.FirstSeparator); WriteText(writer, item.LastSeparator); writer.Write(item.Automatic); writer.Write(item.RecognizedAtUtc.Ticks);
+                                writer.Write((byte)item.InputKind); WriteText(writer, item.Issuer); WriteText(writer, item.Algorithm); writer.Write(item.Digits);
+                                writer.Write(item.Period); writer.Write((byte)item.OtpKind); writer.Write(item.Counter); writer.Write(item.UsesUri);
+                                WriteText(writer, item.Name);
+                                writer.Write(item.ExpiresAtUtc.HasValue ? item.ExpiresAtUtc.Value.Ticks : 0L); writer.Write(item.Pinned);
+                                if (stream.Length > MaxPlainBytes) throw new FormatException("历史记录内容过大，请减少导入内容。");
+                            }
                         }
+                        plain = stream.ToArray();
                     }
-                    plain = stream.ToArray();
-                    // Remove plaintext from MemoryStream's backing buffer as well.
-                    Array.Clear(stream.GetBuffer(), 0, (int)stream.Length);
+                    finally { Array.Clear(stream.GetBuffer(), 0, (int)stream.Length); }
                 }
                 encrypted = ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser);
+                if (encrypted.Length > MaxFileBytes) throw new FormatException("加密历史文件过大。");
                 Directory.CreateDirectory(Path.GetDirectoryName(path));
                 using (FileStream file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { file.Write(encrypted, 0, encrypted.Length); file.Flush(true); }

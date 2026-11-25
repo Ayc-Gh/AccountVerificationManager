@@ -24,7 +24,7 @@ if ($Platform -eq 'All' -or $Platform -eq 'Android') {
     # This is an already published app: never silently generate a replacement key.
     foreach ($name in @('release.jks', 'release.properties')) {
         if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "android\signing\$name"))) {
-            throw 'Restore the original android/signing directory before building a release.'
+            throw 'Restore the current android/signing directory before building a release.'
         }
     }
     if (-not $JdkPath -or -not $SdkPath) {

@@ -99,13 +99,20 @@ public final class OtpReplacementEditor {
     }
     private void updatePreview() {
         if (preview != null) { preview.close(); preview = null; }
-        code.setText("--- ---"); parameters.setText("新验证码预览"); feedback.setText("纯密钥沿用当前参数；URI 采用新参数。"); feedback.setTextColor(normalColor);
+        code.setText("--- ---"); parameters.setText("新验证码预览"); feedback.setText(R.string.otp_replacement_hint); feedback.setTextColor(normalColor);
         if (!input.getText().toString().trim().isEmpty()) try {
             preview = original.replaceOtp(input.getText().toString()); parameters.setText(preview.otp.description()); updateCode();
         } catch (IllegalArgumentException error) { error(error.getMessage()); }
         copyNew.setEnabled(preview != null); dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(preview != null && !draft.saving);
     }
-    private void updateCode() { if (!validRecord()) { close(); return; } if (preview != null) { String value = preview.code(Totp.now()); code.setText(value.substring(0, value.length()/2) + " " + value.substring(value.length()/2)); } }
+    private void updateCode() {
+        if (!validRecord()) { close(); return; }
+        if (preview != null) {
+            String value = preview.code(Totp.now());
+            int split = value.length() / 2;
+            code.setText(activity.getString(R.string.otp_grouped, value.substring(0, split), value.substring(split)));
+        }
+    }
     public void acceptQr(String text) { if (!closed && !draft.saving) input.setText(text); }
     public void error(String text) { if (!closed) { feedback.setText(text); feedback.setTextColor(Color.rgb(197,64,77)); } }
     public Draft snapshot() { return closed || draft.discarded || !dialog.isShowing() ? null : draft; }

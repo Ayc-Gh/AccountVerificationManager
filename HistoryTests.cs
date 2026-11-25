@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -22,7 +23,7 @@ internal static class HistoryTests
     {
         using (AccountData data = SmartParser.Parse(text)) store.Record(data, true);
     }
-    private static void LegacyFile(string path, Guid id, int version = 1)
+    private static void LegacyFile(string path, Guid id, int version = 1, string password = "Legacy%Password")
     {
         byte[] plain;
         using (MemoryStream stream = new MemoryStream())
@@ -30,13 +31,14 @@ internal static class HistoryTests
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.UTF8, true))
             {
                 writer.Write(0x41564D48); writer.Write(version); writer.Write(1);
-                writer.Write(id.ToString("N")); writer.Write("legacy@example.com"); writer.Write("Legacy%Password"); writer.Write(Secret);
+                writer.Write(id.ToString("N")); writer.Write("legacy@example.com"); writer.Write(password); writer.Write(Secret);
                 writer.Write("----"); writer.Write("----"); writer.Write(true); writer.Write(DateTime.UtcNow.Ticks);
                 if (version >= 2) {
                     writer.Write((byte)InputKind.Record); writer.Write(""); writer.Write("SHA1"); writer.Write(6); writer.Write(30);
                     writer.Write((byte)OtpKind.Totp); writer.Write((ulong)0); writer.Write(false);
                 }
                 if (version >= 3) writer.Write("旧版名称");
+                if (version >= 4) { writer.Write(0L); writer.Write(false); }
             }
             plain = stream.ToArray();
         }
@@ -72,6 +74,59 @@ internal static class HistoryTests
         try { target.Import(another.Entries); } catch (InvalidOperationException) { failed = true; }
         Check(failed && Convert.ToBase64String(before) == Convert.ToBase64String(File.ReadAllBytes(target.FilePath)), "overflow import is atomic and preserves existing history");
     }
+    private static void LongFieldTransferChecks(string folder)
+    {
+        string androidPassword = new string('测', 20000);
+        string previousPath = Path.Combine(folder, "previous-long-field.bin");
+        Guid id = Guid.NewGuid();
+        LegacyFile(previousPath, id, 4, androidPassword);
+        HistoryStore previous = new HistoryStore(previousPath);
+        Check(previous.Find(id).Password == androidPassword, "existing v4 history reads a mobile-length Unicode password");
+
+        string largePassword = new string('例', 40000);
+        string unicodeLabel = new string('a', 4095) + "🔐" + new string('测', 8500) + "+demo@example.com";
+        string mobileSecret = new string('A', 32768);
+        List<HistoryEntry> records = new List<HistoryEntry>();
+        for (int i = 0; i < HistoryStore.Limit; i++) {
+            records.Add(new HistoryEntry(Guid.NewGuid(), i == 0 ? unicodeLabel : "demo" + i + "@example.com",
+                i == 0 ? androidPassword : largePassword, i == 1 ? mobileSecret : Secret, "|", "|", false, DateTime.UtcNow));
+        }
+        byte[] file = HistoryTransfer.Encrypt(records, "demo-transfer");
+        HistoryStore imported = new HistoryStore(Path.Combine(folder, "long-transfer.bin"));
+        Check(imported.Import(HistoryTransfer.Decrypt(file, "demo-transfer")) == records.Count, "valid AVMX fields fit the local history codec");
+        HistoryStore reopened = new HistoryStore(imported.FilePath);
+        reopened.Load();
+        Check(reopened.Entries.Count == records.Count && reopened.Entries[0].Password == androidPassword &&
+            reopened.Entries[records.Count - 1].Password == largePassword, "history above one MiB reopens with its Unicode fields intact");
+        List<HistoryEntry> returned = HistoryTransfer.Decrypt(HistoryTransfer.Encrypt(reopened.Entries, "return-demo"), "return-demo");
+        using (AccountData fromFile = returned[0].Open())
+        using (AccountData fromLabel = SmartParser.ParseUriComponents(fromFile.ToUri()))
+            Check(fromLabel.Account == unicodeLabel && returned[0].Account == unicodeLabel,
+                "mobile label spanning Unicode escape chunks and a 64 KiB URI re-exports intact");
+        using (AccountData original = records[1].Open())
+        using (AccountData restored = returned[1].Open()) {
+            Check(restored.Secret == mobileSecret && restored.Code(59) == original.Code(59), "mobile-length Base32 and its OTP survive re-export");
+            bool tooLongToPaste = false;
+            try { using (AccountData pasted = SmartParser.Parse(restored.ToUri())) { } } catch (FormatException) { tooLongToPaste = true; }
+            Check(tooLongToPaste, "pasting a long file URI still applies the Windows text limit");
+        }
+
+        // Two individually valid selections must fit together before either the file or model is replaced.
+        string separator = new string('分', 20000);
+        List<HistoryEntry> combined = new List<HistoryEntry>();
+        foreach (HistoryEntry entry in records)
+            combined.Add(new HistoryEntry(entry.Id, entry.Account, entry.Password, Secret, separator, separator, false, entry.RecognizedAtUtc));
+        HistoryStore merged = new HistoryStore(Path.Combine(folder, "merged-transfer.bin"));
+        merged.Import(combined.GetRange(0, 5));
+        byte[] before = File.ReadAllBytes(merged.FilePath);
+        bool refused = false;
+        try { merged.Import(combined.GetRange(5, 5)); } catch (FormatException) { refused = true; }
+        Check(refused && merged.Entries.Count == 5 && Convert.ToBase64String(before) == Convert.ToBase64String(File.ReadAllBytes(merged.FilePath)),
+            "combined byte limit preserves the original encrypted history and in-memory selection");
+        merged.Load();
+        Check(merged.Entries.Count == 5 && merged.Entries[0].Password == androidPassword, "prior records reopen after the combined byte limit is reached");
+    }
+
     private static void ManagementChecks(string folder)
     {
         DateTime now = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -165,6 +220,14 @@ internal static class HistoryTests
         Check(failed, "bare HOTP replacement requires explicit new counter URI");
         HistoryEntry advanced = store.ReplaceOtp(hotp, "otpauth://hotp/new?secret=" + nextSecret + "&counter=0");
         Check(advanced.Counter == 0 && advanced.Account == "hotp@example.com", "HOTP URI replacement uses new counter and keeps current account");
+        HistoryStore secondWindow = new HistoryStore(replacePath);
+        HistoryEntry replaced = secondWindow.ReplaceOtp(advanced, "otpauth://hotp/new?secret=" + Secret + "&counter=0");
+        failed = false;
+        try { store.AdvanceCounter(advanced); } catch (InvalidOperationException) { failed = true; }
+        Check(failed && store.Find(replaced.Id).Counter == 0, "a stale window cannot advance a replacement key with the same counter");
+        secondWindow.Rename(replaced.Id, "已命名");
+        HistoryEntry nextCode = store.AdvanceCounter(replaced);
+        Check(nextCode.Counter == 1 && nextCode.Name == "已命名", "a fresh HOTP snapshot advances while retaining a concurrent rename");
         store.Clear(); failed = false; try { store.ReplaceOtp(changed, Secret); } catch (InvalidOperationException) { failed = true; }
         Check(failed && store.Entries.Count == 0, "removed record cannot be silently recreated by replacement");
         File.WriteAllBytes(replacePath, new byte[] { 1, 2, 3 }); failed = false;
@@ -296,6 +359,7 @@ internal static class HistoryTests
             ReplacementChecks(folder);
             ManagementChecks(folder);
             TransferChecks(folder);
+            LongFieldTransferChecks(folder);
             DateTime durationNow = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             HistoryStore durationStore = new HistoryStore(Path.Combine(folder, "retention.bin"), () => durationNow);
             RetentionPeriod duration = RetentionPeriod.Parse("2", 0); durationNow = durationNow.AddHours(3);

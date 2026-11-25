@@ -39,7 +39,10 @@ public final class OAuthLogin {
     public boolean isDenial(String text){try{return callbackParameters(text).containsKey("error");}catch(IllegalArgumentException e){return false;}}
     public synchronized String validateCallback(String text){
         Map<String,String> p=callbackParameters(text);
-        if(p.containsKey("error"))throw new IllegalArgumentException("官方网页未授予授权，请重新登录。");
+        if(p.containsKey("error")){
+            if("access_denied".equals(p.get("error")))throw new IllegalArgumentException("本次授权已被拒绝，请重新登录。");
+            throw new IllegalArgumentException("官方网页未授予授权，请重新登录。");
+        }
         String code=p.getOrDefault("code","");if(code.trim().isEmpty()||code.length()>8192)throw new IllegalArgumentException("回调缺少授权码。");
         if(used)throw new IllegalArgumentException("本次授权码已处理，请重新登录。");return code;
     }
